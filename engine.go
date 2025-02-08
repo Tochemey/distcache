@@ -642,7 +642,7 @@ func (k *engine) joinCluster(ctx context.Context) error {
 		// attempt to join
 		ctx, cancel = context.WithTimeout(ctx, joinTimeout)
 		joinRetrier := retry.NewRetrier(k.config.MaxJoinAttempts(), k.config.JoinRetryInterval(), k.config.JoinRetryInterval())
-		if err := joinRetrier.RunContext(ctx, func(ctx context.Context) error {
+		if err := joinRetrier.RunContext(ctx, func(_ context.Context) error {
 			if _, err := k.mlist.Join(peers); err != nil {
 				return err
 			}

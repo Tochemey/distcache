@@ -29,7 +29,6 @@ linters:
     - gosec
     - gosimple
     - gocyclo
-    - goheader
 
 
 issues:
