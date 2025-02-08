@@ -1,12 +1,23 @@
-# distcache
+# DistCache
 
-[Go](https://go.dev/) Distributed Read-Through Cache Engine. 
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/Tochemey/distcache/build.yml)
+[![codecov](https://codecov.io/gh/Tochemey/distcache/graph/badge.svg?token=0eS0QphVUH)](https://codecov.io/gh/Tochemey/distcache)
+
+DistCache is a Distributed Read-Through Cache Engine built in [Go](https://go.dev/). 
 
 A Distributed Read-Through Cache is a caching strategy where cache sits between the application and the data source,
 automatically fetching and storing data when requested. If data is not in the cache (cache miss), it retrieves it from the primary data source (e.g., database, API), stores it
 in the cache, and serves it to the client. This approach reduces direct database queries, improves response times, and enhances system scalability.
 
 DistCache has been built to be scalable and high available. With DistCache, you can instantly create a fast, scalable, distributed system across a cluster of computers.
+
+## Table Of Content
+
+- [Features](#features)
+- [How It Works](#how-it-works)
+- [Use Cases](#use-cases)
+- [Installation](#installation)
+- [Get Started](#get-started)
 
 ## Features
 
@@ -98,3 +109,15 @@ type KeySpace interface {
 ```
 - Create an instance of the `Config`. More information can be found on the [Config](./config.go) reference doc.
 - Create an instance of `Engine` by calling the method: `NewEngine(config *Config) (Engine, error)`
+
+## Contribution
+
+Contributions are welcome!
+The project adheres to [Semantic Versioning](https://semver.org)
+and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+
+To contribute please:
+
+- Fork the repository
+- Create a feature branch
+- Submit a [pull request](https://help.github.com/articles/using-pull-requests)
