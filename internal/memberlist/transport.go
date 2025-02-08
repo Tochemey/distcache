@@ -26,7 +26,7 @@ package memberlist
 
 import (
 	"bytes"
-	"crypto/md5"
+	"crypto/md5" // nolint
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -226,7 +226,7 @@ func (t *TCPTransport) writeTo(b []byte, addr string) error {
 	// it takes to compute the digest is not taken in account).
 	// We use md5 as quick and relatively short hash, not in cryptographic context.
 	// It's also used to detect if the whole packet has been received on the receiver side.
-	digest := md5.Sum(b)
+	digest := md5.Sum(b) //nolint
 
 	// Prepare the header *before* setting the deadline on the connection.
 	headerBuf := bytes.Buffer{}
@@ -442,7 +442,7 @@ func (t *TCPTransport) handleConnection(conn net.Conn) {
 
 		receivedDigest := buf[len(buf)-md5.Size:]
 		buf = buf[:len(buf)-md5.Size]
-		expectedDigest := md5.Sum(buf)
+		expectedDigest := md5.Sum(buf) // nolint
 
 		if !bytes.Equal(receivedDigest, expectedDigest[:]) {
 			t.logger.Warnf("packet digest mismatch. expected=(%s), received=(%s), data_length=(%d), remote=(%s)", fmt.Sprintf("%x", expectedDigest), fmt.Sprintf("%x", receivedDigest), len(buf), conn.RemoteAddr())
