@@ -27,85 +27,72 @@ package validation
 import (
 	"testing"
 
-	"github.com/stretchr/testify/suite"
+	"github.com/stretchr/testify/assert"
 )
-
-type validationTestSuite struct {
-	suite.Suite
-}
 
 // In order for 'go test' to run this suite, we need to create
 // a normal test function and pass our suite to suite.Run
 func TestValidation(t *testing.T) {
-	suite.Run(t, new(validationTestSuite))
-}
-
-func (s *validationTestSuite) TestNewChain() {
-	s.Run("new chain without option", func() {
+	t.Run("With NewChain", func(t *testing.T) {
 		chain := New()
-		s.Assert().NotNil(chain)
+		assert.NotNil(t, chain)
 	})
-	s.Run("new chain with options", func() {
+	t.Run("With new chain with options", func(t *testing.T) {
 		chain := New(FailFast())
-		s.Assert().NotNil(chain)
-		s.Assert().True(chain.failFast)
+		assert.NotNil(t, chain)
+		assert.True(t, chain.failFast)
 		chain2 := New(AllErrors())
-		s.Assert().NotNil(chain2)
-		s.Assert().False(chain2.failFast)
+		assert.NotNil(t, chain2)
+		assert.False(t, chain2.failFast)
 	})
-}
-
-func (s *validationTestSuite) TestAddValidator() {
-	chain := New()
-	s.Assert().NotNil(chain)
-	s.Assert().Empty(chain.validators)
-	chain.AddValidator(NewBooleanValidator(true, ""))
-	s.Assert().NotEmpty(chain.validators)
-	s.Assert().Equal(1, len(chain.validators))
-}
-
-func (s *validationTestSuite) TestAddAssertion() {
-	chain := New()
-	s.Assert().NotNil(chain)
-	s.Assert().Empty(chain.validators)
-	chain.AddAssertion(true, "")
-	s.Assert().NotEmpty(chain.validators)
-	s.Assert().Equal(1, len(chain.validators))
-}
-
-func (s *validationTestSuite) TestValidate() {
-	s.Run("with single validator", func() {
+	t.Run("With Validator", func(t *testing.T) {
 		chain := New()
-		s.Assert().NotNil(chain)
+		assert.NotNil(t, chain)
+		assert.Empty(t, chain.validators)
+		chain.AddValidator(NewBooleanValidator(true, ""))
+		assert.NotEmpty(t, chain.validators)
+		assert.Len(t, chain.validators, 1)
+	})
+	t.Run("With Assertion", func(t *testing.T) {
+		chain := New()
+		assert.NotNil(t, chain)
+		assert.Empty(t, chain.validators)
+		chain.AddAssertion(true, "")
+		assert.NotEmpty(t, chain.validators)
+		assert.Len(t, chain.validators, 1)
+	})
+	t.Run("With Validate", func(t *testing.T) {
+		chain := New()
+		assert.NotNil(t, chain)
 		chain.AddValidator(NewEmptyStringValidator("field", ""))
-		s.Assert().Nil(chain.violations)
+		assert.Nil(t, chain.violations)
 		err := chain.Validate()
-		s.Assert().NotNil(chain.violations)
-		s.Assert().Error(err)
-		s.Assert().EqualError(err, "the [field] is required")
+		assert.NotNil(t, chain.violations)
+		assert.Error(t, err)
+		assert.EqualError(t, err, "the [field] is required")
 	})
-	s.Run("with multiple validators and FailFast option", func() {
+	t.Run("With multiple validators and FailFast option", func(t *testing.T) {
 		chain := New(FailFast())
-		s.Assert().NotNil(chain)
+		assert.NotNil(t, chain)
 		chain.
 			AddValidator(NewEmptyStringValidator("field", "")).
 			AddAssertion(false, "this is false")
-		s.Assert().Nil(chain.violations)
+		assert.Nil(t, chain.violations)
 		err := chain.Validate()
-		s.Assert().Nil(chain.violations)
-		s.Assert().Error(err)
-		s.Assert().EqualError(err, "the [field] is required")
+		assert.Nil(t, chain.violations)
+		assert.Error(t, err)
+		assert.EqualError(t, err, "the [field] is required")
 	})
-	s.Run("with multiple validators and AllErrors option", func() {
+	t.Run("With multiple validators and AllErrors option", func(t *testing.T) {
 		chain := New(AllErrors())
-		s.Assert().NotNil(chain)
+		assert.NotNil(t, chain)
 		chain.
 			AddValidator(NewEmptyStringValidator("field", "")).
 			AddAssertion(false, "this is false")
-		s.Assert().Nil(chain.violations)
+		assert.Nil(t, chain.violations)
 		err := chain.Validate()
-		s.Assert().NotNil(chain.violations)
-		s.Assert().Error(err)
-		s.Assert().EqualError(err, "the [field] is required; this is false")
+		assert.NotNil(t, chain.violations)
+		assert.Error(t, err)
+		assert.EqualError(t, err, "the [field] is required; this is false")
 	})
 }

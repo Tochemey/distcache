@@ -25,7 +25,7 @@
 package validation
 
 import (
-	"github.com/groupcache/groupcache-go/v3"
+	"go.uber.org/multierr"
 )
 
 // Validator interface generalizes the validator implementations
@@ -81,7 +81,6 @@ func (c *Chain) AddAssertion(isTrue bool, message string) *Chain {
 // Validate runs validation chain and returns resulting error(s).
 // It returns all validation error by default, use FailFast option to stop validation on first error.
 func (c *Chain) Validate() error {
-	merr := &groupcache.MultiError{}
 	for _, v := range c.validators {
 		if violations := v.Validate(); violations != nil {
 			if c.failFast {
@@ -89,8 +88,8 @@ func (c *Chain) Validate() error {
 				return violations
 			}
 			// append error to the violations
-			merr.Add(violations)
+			c.violations = multierr.Append(c.violations, violations)
 		}
 	}
-	return merr.NilOrError()
+	return c.violations
 }

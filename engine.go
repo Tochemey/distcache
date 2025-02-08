@@ -253,11 +253,11 @@ func (k *engine) Start(ctx context.Context) (err error) {
 
 	scheme := "http"
 	client := http.DefaultClient
-	if k.config.TlsConfig() != nil {
+	if k.config.TLSConfig() != nil {
 		scheme = "https"
 		client = &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: k.config.TlsConfig(),
+				TLSClientConfig: k.config.TLSConfig(),
 			},
 		}
 	}

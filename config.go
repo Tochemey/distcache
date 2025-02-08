@@ -312,10 +312,10 @@ func (c Config) WriteTimeout() time.Duration {
 	return c.writeTimeout
 }
 
-// TlsConfig returns the TLS config.
+// TLSConfig returns the TLS config.
 // This option allows secure communication by setting a custom TLS configuration
 // for encrypting data in transit.
-func (c Config) TlsConfig() *tls.Config {
+func (c Config) TLSConfig() *tls.Config {
 	return c.tlsConfig
 }
 

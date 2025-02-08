@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ import (
 	"go.uber.org/atomic"
 
 	"github.com/tochemey/distcache/discovery"
+	"github.com/tochemey/distcache/log"
 )
 
 // Discovery represents the kubernetes discovery
@@ -53,6 +55,8 @@ type Discovery struct {
 	subscriptions []*nats.Subscription
 
 	address string
+	// define a logger
+	logger log.Logger
 }
 
 // enforce compilation error
@@ -65,6 +69,7 @@ func NewDiscovery(config *Config) *Discovery {
 		mu:          sync.Mutex{},
 		initialized: atomic.NewBool(false),
 		registered:  atomic.NewBool(false),
+		logger:      log.New(log.InfoLevel, os.Stdout),
 		config:      config,
 	}
 
@@ -166,7 +171,7 @@ func (d *Discovery) Register() error {
 
 			bytea, _ := json.Marshal(response)
 			if err := d.connection.Publish(msg.Reply, bytea); err != nil {
-				// TODO: add a logger or panic
+				d.logger.Error(err)
 			}
 		}
 	}
