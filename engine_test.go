@@ -48,6 +48,13 @@ import (
 )
 
 func TestEngine(t *testing.T) {
+	t.Run("With NewEngine failure due invalid IP", func(t *testing.T) {
+		engine, err := NewEngine(&Config{
+			bindAddr: "127.0.0.0.12",
+		})
+		require.Error(t, err)
+		require.Nil(t, engine)
+	})
 	t.Run("When discovery provider registration failed engine cannot start", func(t *testing.T) {
 		ctx := context.Background()
 		// generate the ports for the single startNode
@@ -86,6 +93,8 @@ func TestEngine(t *testing.T) {
 
 		err = engine.Start(ctx)
 		require.Error(t, err)
+		require.NoError(t, engine.Stop(ctx))
+		provider.AssertExpectations(t)
 	})
 	t.Run("With KeySpace Not Found error", func(t *testing.T) {
 		ctx := context.Background()
