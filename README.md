@@ -34,6 +34,9 @@ DistCache has been built to be scalable and high available. With DistCache, you 
    - [NATS](./discovery/nats/README.md) - helps discover cluster nodes during bootstrap using [NATS](https://github.com/nats-io/nats.go).
    - [Static](./discovery/static/README.md) - the provided static cluster nodes help form a cluster. This provider is recommended for tests or demo purpose.
    - [DNS](./discovery/dnssd/README.md) - helps discover cluster nodes during bootstrap using the Go's DNS resolver.
+- **TLS Support**: DistCache comes bundled with TLS support. When running in cluster mode, all nodes must share the same root Certificate Authority (CA) to ensure a successful handshake. 
+    TLS can be enabled in the [config](./config.go) with the option `WithTLS` method. This method allows you to configure both the TLS server and client settings. 
+    The TLS configuration is essential for enabling secure communication between nodes.
 
 ## How It Works
 
