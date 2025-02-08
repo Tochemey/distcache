@@ -63,10 +63,64 @@ go get github.com/tochemey/distcache
 
 ## Get Started
 
-- Implement the [`DataSource`](./datasource.go) interface: This tells DistCache where to fetch the missing data from in case of cache-miss. The DataSource can be a database, API or file system.
-- Implement the [`KeySpace`](./keyspace.go) interface. The `KeySpace` helps group key/value pairs in some sort of space which can fine tune based upon the need of the application.
-- Create an instance of the `Config`. More information can be found on the [Config](./config.go) reference doc.
-- Create an instance of [`Engine`](./engine.go) by calling the method: `NewEngine(config *Config) (Engine, error)`
+To integrate DistCache into your project, one only need to implement two key interfaces that are needed in the [Config](./config.go) to start the DistCache [Engine](./engine.go).
+
+### 1. Implement the DataSource Interface
+
+The [DataSource](./datasource.go) interface tells DistCache where to fetch data from when a cache miss occurs. This could be any external source such as a database, an API, or even a file system.
+
+#### Example:
+
+````go
+// MyDataSource implements the DataSource interface.
+type MyDataSource struct{}
+
+// Fetch retrieves data for a given key. Replace this with your actual data fetching logic.
+func (ds *MyDataSource) Fetch(ctx context.Context, key string) ([]byte, error) {
+	if key == "" {
+		return nil, errors.New("empty key provided")
+	}
+	// Simulate data fetching. In practice, query your database, API, etc.
+	data := fmt.Sprintf("Data for key: %s", key)
+	return []byte(data), nil
+}
+````
+
+### 2.  Implement the KeySpace Interface
+The [KeySpace](./keyspace.go) interface defines a logical namespace for grouping key/value pairs. It provides metadata such as the namespace's name, storage limits, and expiration logic for keys.
+
+#### Example:
+
+```go
+// MyKeySpace implements the KeySpace interface.
+type MyKeySpace struct {
+	name       string
+	maxBytes   int64
+	dataSource *MyDataSource
+}
+
+// Name returns the name of the keyspace.
+func (ks *MyKeySpace) Name() string {
+	return ks.name
+}
+
+// MaxBytes returns the maximum number of bytes allocated for this keyspace.
+func (ks *MyKeySpace) MaxBytes() int64 {
+	return ks.maxBytes
+}
+
+// DataSource returns the data source for fetching data on a cache miss.
+func (ks *MyKeySpace) DataSource() DataSource {
+	return ks.dataSource
+}
+
+// ExpiresAt returns the expiration time for a given key.
+// For example, keys may expire after 10 minutes.
+func (ks *MyKeySpace) ExpiresAt(ctx context.Context, key string) time.Time {
+	return time.Now().Add(10 * time.Minute)
+}
+```
+
 
 ## Contribution
 
