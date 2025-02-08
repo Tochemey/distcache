@@ -325,7 +325,7 @@ func (c Config) Validate() error {
 		New(validation.FailFast()).
 		AddAssertion(c.shutdownTimeout > 0, "shutdownTimeout is invalid").
 		AddAssertion(c.joinRetryInterval > 0, "joinRetryInterval is invalid").
-		AddAssertion(c.maxJoinAttempts > 0, "maxJoinAttempts is invalid").
+		AddAssertion(c.maxJoinAttempts > 1, "maxJoinAttempts is invalid").
 		AddAssertion(c.bootstrapTimeout > 0, "bootstrapTimeout is invalid").
 		AddAssertion(c.readTimeout > 0, "readTimeout is invalid").
 		AddAssertion(c.writeTimeout > 0, "writeTimeout is invalid").

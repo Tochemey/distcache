@@ -88,11 +88,15 @@ func TestEngine(t *testing.T) {
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrKeySpaceNotFound)
 
+		_, err = engine.Get(ctx, "invalid Space", "key")
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrKeySpaceNotFound)
+
 		require.NoError(t, engine.Stop(ctx))
 		require.NoError(t, provider.Close())
 		srv.Shutdown()
 	})
-	t.Run("With PutMany", func(t *testing.T) {
+	t.Run("With PutMany And DeleteMany", func(t *testing.T) {
 		ctx := context.Background()
 
 		srv := startNatsServer(t)
@@ -132,6 +136,9 @@ func TestEngine(t *testing.T) {
 		err = engine.PutMany(ctx, "invalid Space", entries)
 		require.Error(t, err)
 		require.ErrorIs(t, err, ErrKeySpaceNotFound)
+
+		err = engine.DeleteMany(ctx, keySpace, []string{"users"})
+		require.NoError(t, err)
 
 		require.NoError(t, engine.Stop(ctx))
 		require.NoError(t, provider.Close())

@@ -217,10 +217,8 @@ func (k *engine) Start(ctx context.Context) (err error) {
 	k.mconfig.LogOutput = newLogWriter(k.config.Logger())
 	k.mconfig.Name = net.JoinHostPort(k.hostNode.BindAddr, strconv.Itoa(k.hostNode.DiscoveryPort))
 
-	meta, err := json.Marshal(k.hostNode)
-	if err != nil {
-		return fmt.Errorf("failed to marshal meta data: %w", err)
-	}
+	// no need to check the error because we set the data
+	meta, _ := json.Marshal(k.hostNode)
 
 	k.mconfig.Delegate = newDelegate(meta)
 	provider := k.config.DiscoveryProvider()
@@ -236,11 +234,8 @@ func (k *engine) Start(ctx context.Context) (err error) {
 		return err
 	}
 
-	// get the list of peers
-	peers, err := k.peers()
-	if err != nil {
-		return fmt.Errorf("failed to get peers: %w", err)
-	}
+	// get the list of peers should not fail
+	peers, _ := k.peers()
 
 	k.lock.Lock()
 	// start the daemon
@@ -528,7 +523,8 @@ func (k *engine) peers() ([]*Peer, error) {
 			return nil, err
 		}
 
-		if peer != nil && !peer.IsSelf {
+		// exclude the host node from the list of found peers
+		if peer != nil && peer.Address() != k.hostNode.Address() {
 			peers = append(peers, peer)
 		}
 	}
@@ -661,8 +657,5 @@ func (k *engine) joinCluster(ctx context.Context) error {
 
 // computeTimeout calculates the approximate timeout given maxAttempts and retryInterval.
 func computeTimeout(maxAttempts int, retryInterval time.Duration) time.Duration {
-	if maxAttempts <= 1 {
-		return 0 // No retries, so no waiting time.
-	}
 	return time.Duration(maxAttempts-1) * retryInterval
 }
