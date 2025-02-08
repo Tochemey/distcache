@@ -4,7 +4,7 @@
 [![codecov](https://codecov.io/gh/Tochemey/distcache/graph/badge.svg?token=0eS0QphVUH)](https://codecov.io/gh/Tochemey/distcache)
 [![GitHub go.mod Go version](https://badges.chse.dev/github/go-mod/go-version/Tochemey/distcache)](https://go.dev/doc/install)
 
-DistCache is a Distributed Read-Through Cache Engine built in [Go](https://go.dev/). 
+DistCache is a Distributed Read-Through Cache Engine built in [Go](https://go.dev/).
 
 A Distributed Read-Through Cache is a caching strategy where cache sits between the application and the data source,
 automatically fetching and storing data when requested. If data is not in the cache (cache miss), it retrieves it from the primary data source (e.g., database, API), stores it
@@ -29,14 +29,14 @@ DistCache has been built to be scalable and high available. With DistCache, you 
 - **Automatic Nodes discovery**: All nodes in the cluster are aware of the cluster topology change and react to it
   accordingly.
 - **Discovery Provider API**: The developer can build custom nodes discovery providers or use the built-in providers.
-- **Built-in Discovery Providers**: 
-   - [kubernetes](./discovery/kubernetes/README.md) - helps discover cluster nodes during boostrap using the kubernetes client.
-   - [NATS](./discovery/nats/README.md) - helps discover cluster nodes during bootstrap using [NATS](https://github.com/nats-io/nats.go).
-   - [Static](./discovery/static/README.md) - the provided static cluster nodes help form a cluster. This provider is recommended for tests or demo purpose.
-   - [DNS](./discovery/dnssd/README.md) - helps discover cluster nodes during bootstrap using the Go's DNS resolver.
-- **TLS Support**: DistCache comes bundled with TLS support. When running in cluster mode, all nodes must share the same root Certificate Authority (CA) to ensure a successful handshake. 
-    TLS can be enabled in the [config](./config.go) with the option `WithTLS` method. This method allows you to configure both the TLS server and client settings. 
-    The TLS configuration is essential for enabling secure communication between nodes.
+- **Built-in Discovery Providers**:
+    - [kubernetes](./discovery/kubernetes/README.md) - helps discover cluster nodes during boostrap using the kubernetes client.
+    - [NATS](./discovery/nats/README.md) - helps discover cluster nodes during bootstrap using [NATS](https://github.com/nats-io/nats.go).
+    - [Static](./discovery/static/README.md) - the provided static cluster nodes help form a cluster. This provider is recommended for tests or demo purpose.
+    - [DNS](./discovery/dnssd/README.md) - helps discover cluster nodes during bootstrap using the Go's DNS resolver.
+- **TLS Support**: DistCache comes bundled with TLS support. All nodes must share the same root Certificate Authority (CA) to ensure a successful handshake.
+  TLS can be enabled in the [config](./config.go) with the option `WithTLS` method. This method allows you to configure both the TLS server and client settings.
+  The TLS configuration is essential for enabling secure communication between nodes.
 
 ## How It Works
 
