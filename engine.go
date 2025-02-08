@@ -620,7 +620,7 @@ func (k *engine) joinCluster(ctx context.Context) error {
 
 	var peers []string
 	retrier := retry.NewRetrier(k.config.MaxJoinAttempts(), k.config.JoinRetryInterval(), k.config.JoinRetryInterval())
-	if err := retrier.RunContext(ctx, func(ctx context.Context) error {
+	if err := retrier.RunContext(ctx, func(_ context.Context) error {
 		peers, err = k.config.DiscoveryProvider().DiscoverPeers()
 		if err != nil {
 			return err

@@ -75,7 +75,7 @@ func TestForEach(t *testing.T) {
 	sm.Set(2, "two")
 
 	keys := make([]int, 0)
-	sm.Range(func(k int, v string) {
+	sm.Range(func(k int, v string) { // nolint
 		keys = append(keys, k)
 	})
 
