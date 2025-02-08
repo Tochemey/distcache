@@ -45,6 +45,7 @@ import (
 	"github.com/hashicorp/memberlist"
 
 	"github.com/tochemey/distcache/internal/errorschain"
+	internalmemberlist "github.com/tochemey/distcache/internal/memberlist"
 	"github.com/tochemey/distcache/internal/syncmap"
 	"github.com/tochemey/distcache/internal/tcp"
 )
@@ -210,12 +211,33 @@ func (k *engine) Start(ctx context.Context) (err error) {
 	k.lock.Lock()
 	k.config.Logger().Infof("DistCache Engine starting on [%s/%s, host=%s]...", runtime.GOOS, runtime.GOARCH, k.hostNode.Address())
 	// create the memberlist configuration
+	mtConfig := internalmemberlist.TCPTransportConfig{
+		BindAddrs:          []string{k.hostNode.BindAddr},
+		BindPort:           k.hostNode.DiscoveryPort,
+		PacketDialTimeout:  5 * time.Second,
+		PacketWriteTimeout: 5 * time.Second,
+		Logger:             k.config.Logger(),
+		DebugEnabled:       false,
+	}
+
+	if k.config.TLSInfo() != nil {
+		mtConfig.TLSEnabled = true
+		mtConfig.TLS = k.config.TLSInfo().ServerTLS
+	}
+
+	mtransport, err := internalmemberlist.NewTCPTransport(mtConfig)
+	if err != nil {
+		k.config.Logger().Errorf("Failed to create memberlist TCP transport: %v", err)
+		return err
+	}
+
 	k.mconfig = memberlist.DefaultLANConfig()
 	k.mconfig.BindAddr = k.hostNode.BindAddr
 	k.mconfig.BindPort = k.hostNode.DiscoveryPort
 	k.mconfig.AdvertisePort = k.hostNode.DiscoveryPort
 	k.mconfig.LogOutput = newLogWriter(k.config.Logger())
 	k.mconfig.Name = net.JoinHostPort(k.hostNode.BindAddr, strconv.Itoa(k.hostNode.DiscoveryPort))
+	k.mconfig.Transport = mtransport
 
 	// no need to check the error because we set the data
 	meta, _ := json.Marshal(k.hostNode)

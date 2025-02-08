@@ -509,7 +509,7 @@ func startEngine(t *testing.T, serverAddr string, keySpaces []KeySpace) (Engine,
 
 	config := NewConfig(provider, keySpaces,
 		WithBindAddr(host),
-		WithLogger(log.DiscardLogger),
+		WithLogger(log.DefaultLogger),
 		WithDiscoveryPort(discoveryPort),
 		WithBindPort(bindPort))
 
@@ -545,7 +545,7 @@ func startSecuredEngine(t *testing.T, serverAddr string, keySpaces []KeySpace, i
 
 	config := NewConfig(provider, keySpaces,
 		WithBindAddr(host),
-		WithLogger(log.DiscardLogger),
+		WithLogger(log.DefaultLogger),
 		WithDiscoveryPort(discoveryPort),
 		WithShutdownTimeout(3*time.Second),
 		WithTLS(info),
