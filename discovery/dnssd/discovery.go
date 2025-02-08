@@ -123,9 +123,13 @@ func (d *Discovery) DiscoverPeers() ([]string, error) {
 
 	var err error
 
+	resolver := &net.Resolver{
+		PreferGo: true, // Prefer Go's DNS resolver
+	}
+
 	// only extract ipv6
 	if v6 {
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip6", d.config.DomainName)
+		ips, err := resolver.LookupIP(ctx, "ip6", d.config.DomainName)
 		if err != nil {
 			return nil, err
 		}

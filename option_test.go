@@ -37,6 +37,11 @@ import (
 
 func TestOptions(t *testing.T) {
 	tlsConfig := &tls.Config{InsecureSkipVerify: true} // nolint
+	tlsInfo := &TLSInfo{
+		ClientTLS: tlsConfig,
+		ServerTLS: tlsConfig,
+	}
+
 	hashFn := hash.DefaultHasher()
 	testCases := []struct {
 		name     string
@@ -105,8 +110,8 @@ func TestOptions(t *testing.T) {
 		},
 		{
 			name:     "WithTLS",
-			option:   WithTLS(tlsConfig),
-			expected: Config{tlsConfig: tlsConfig},
+			option:   WithTLS(tlsInfo),
+			expected: Config{tlsInfo: tlsInfo},
 		},
 		{
 			name:     "WithHasher",

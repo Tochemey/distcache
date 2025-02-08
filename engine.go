@@ -248,23 +248,27 @@ func (k *engine) Start(ctx context.Context) (err error) {
 
 	scheme := "http"
 	client := http.DefaultClient
-	if k.config.TLSConfig() != nil {
+	if k.config.TLSInfo() != nil {
 		scheme = "https"
 		client = &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: k.config.TLSConfig(),
+				TLSClientConfig: k.config.TLSInfo().ClientTLS,
 			},
 		}
 	}
 
 	// Explicitly instantiate and use the HTTP transport
-	httpTransport := transport.NewHttpTransport(
-		transport.HttpTransportOptions{
-			Client: client,
-			Scheme: scheme,
-			Logger: newGLogger(k.config.Logger()),
-		},
-	)
+	transportOpts := transport.HttpTransportOptions{
+		Client: client,
+		Scheme: scheme,
+		Logger: newGLogger(k.config.Logger()),
+	}
+
+	if k.config.TLSInfo() != nil {
+		transportOpts.TLSConfig = k.config.TLSInfo().ServerTLS
+	}
+
+	httpTransport := transport.NewHttpTransport(transportOpts)
 
 	daemon, err := groupcache.ListenAndServe(ctx, k.hostNode.Address(), groupcache.Options{
 		HashFn:    hashFn,

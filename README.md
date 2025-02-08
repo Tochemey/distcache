@@ -30,10 +30,10 @@ DistCache has been built to be scalable and high available. With DistCache, you 
   accordingly.
 - **Discovery Provider API**: The developer can build custom nodes discovery providers or use the built-in providers.
 - **Built-in Discovery Providers**: 
-   - [kubernetes](./discovery/kubernetes/README.md)
-   - [NATS](./discovery/nats/README.md)
-   - [Static](./discovery/static/README.md) 
-   - [DNS](./discovery/dnssd/README.md)
+   - [kubernetes](./discovery/kubernetes/README.md) - helps discover cluster nodes during boostrap using the kubernetes client.
+   - [NATS](./discovery/nats/README.md) - helps discover cluster nodes during bootstrap using [NATS](https://github.com/nats-io/nats.go).
+   - [Static](./discovery/static/README.md) - the provided static cluster nodes help form a cluster. This provider is recommended for tests or demo purpose.
+   - [DNS](./discovery/dnssd/README.md) - helps discover cluster nodes during bootstrap using the Go's DNS resolver.
 
 ## How It Works
 
@@ -54,62 +54,16 @@ DistCache has been built to be scalable and high available. With DistCache, you 
 
 ## Installation
 
-`DistCache requires Go version 1.23 and above`
-
 ```bash
 go get github.com/tochemey/distcache
 ```
 
 ## Get Started
 
-- Implement the `DataSource` interface: This tells DistCache where to fetch the missing data from in case of cache-miss
-```go
-// DataSource defines the interface used by `distcache` to retrieve data
-// when a requested entry is not found in the cache. Implementations of this
-// interface provide a mechanism to fetch data from an external source, such
-// as a database, API, or file system.
-type DataSource interface {
-	// Fetch retrieves the value associated with the given key from the data source.
-	// It is called when a cache miss occurs.
-	//
-	// Parameters:
-	//   - ctx: A context for managing timeouts, cancellations, or deadlines.
-	//   - key: The cache key whose value needs to be fetched.
-	//
-	// Returns:
-	//   - A byte slice containing the fetched data.
-	//   - An error if the data retrieval fails.
-	Fetch(ctx context.Context, key string) ([]byte, error)
-}
-```
-- Implement the `KeySpace` interface.
-```go
-// KeySpace defines a logical namespace for storing key-value pairs in a distributed cache.
-// It provides metadata about the namespace, including its name, storage limits, and data source.
-// Additionally, it allows checking when a specific key is set to expire.
-type KeySpace interface {
-	// Name returns the name of the namespace.
-	// The namespace is used to logically group key-value pairs.
-	Name() string
-
-	// MaxBytes returns the maximum number of bytes allocated for this namespace.
-	// Once the limit is reached, the cache may evict entries based on its eviction policy.
-	MaxBytes() int64
-
-	// DataSource returns the underlying data source for this namespace.
-	// This source is used to fetch data in case of a cache miss.
-	DataSource() DataSource
-
-	// ExpiresAt returns the expiration time for a given key within the namespace.
-	// If the key does not have a predefined expiration time, it may return a zero time.
-	//
-	// ctx: Context for managing timeouts or cancellations.
-	// key: The cache key whose expiration time is being queried.
-	ExpiresAt(ctx context.Context, key string) time.Time
-}
-```
+- Implement the [`DataSource`](./datasource.go) interface: This tells DistCache where to fetch the missing data from in case of cache-miss. The DataSource can be a database, API or file system.
+- Implement the [`KeySpace`](./keyspace.go) interface. The `KeySpace` helps group key/value pairs in some sort of space which can fine tune based upon the need of the application.
 - Create an instance of the `Config`. More information can be found on the [Config](./config.go) reference doc.
-- Create an instance of `Engine` by calling the method: `NewEngine(config *Config) (Engine, error)`
+- Create an instance of [`Engine`](./engine.go) by calling the method: `NewEngine(config *Config) (Engine, error)`
 
 ## Contribution
 

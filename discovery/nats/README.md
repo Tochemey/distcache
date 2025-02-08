@@ -1,5 +1,8 @@
 # NATS Discovery Provider
 
+The NATS Discovery Provider helps `DistCache` during bootstrap to discover existing nodes in the cluster.
+Once the nodes are discovered `DistCache` makes use of the gossip protocol to manage cluster topolgy changes.
+
 To use the NATS discovery provider one needs to provide the following:
 
 - `Server`: the NATS Server address

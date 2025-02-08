@@ -25,7 +25,6 @@
 package distcache
 
 import (
-	"crypto/tls"
 	"time"
 
 	"github.com/tochemey/distcache/hash"
@@ -303,20 +302,24 @@ func WithMinimumPeersQuorum(minQuorum int) Option {
 	})
 }
 
-// WithTLS configures the cache engine to use the specified TLS settings.
+// WithTLS configures the cache engine to use the specified TLS settings for both the Server and Client.
+//
+// Ensure that both the Server and Client are configured with the same
+// root Certificate Authority (CA) to enable successful handshake and
+// mutual authentication.
 //
 // This option allows secure communication by setting a custom TLS configuration
 // for encrypting data in transit.
 //
 // Parameters:
-//   - tlsConfig: A pointer to a tls.Config struct that defines TLS settings,
+//   - info: A pointer to TLSInfo struct that defines TLS settings,
 //     such as certificates, cipher suites, and authentication options.
 //
 // Returns:
 //   - Option: A functional option that applies the TLS configuration to the cache engine.
-func WithTLS(tlsConfig *tls.Config) Option {
+func WithTLS(info *TLSInfo) Option {
 	return OptionFunc(func(config *Config) {
-		config.tlsConfig = tlsConfig
+		config.tlsInfo = info
 	})
 }
 

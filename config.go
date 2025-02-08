@@ -25,7 +25,6 @@
 package distcache
 
 import (
-	"crypto/tls"
 	"net"
 	"os"
 	"strconv"
@@ -159,7 +158,7 @@ type Config struct {
 	writeTimeout time.Duration
 
 	// TLS support.
-	tlsConfig *tls.Config
+	tlsInfo *TLSInfo
 }
 
 // enforce compilation error
@@ -312,11 +311,11 @@ func (c Config) WriteTimeout() time.Duration {
 	return c.writeTimeout
 }
 
-// TLSConfig returns the TLS config.
+// TLSInfo returns the TLS Info.
 // This option allows secure communication by setting a custom TLS configuration
 // for encrypting data in transit.
-func (c Config) TLSConfig() *tls.Config {
-	return c.tlsConfig
+func (c Config) TLSInfo() *TLSInfo {
+	return c.tlsInfo
 }
 
 // Validate validates the distcache configuration
