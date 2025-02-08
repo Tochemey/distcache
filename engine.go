@@ -268,13 +268,11 @@ func (k *engine) Start(ctx context.Context) (err error) {
 		transportOpts.TLSConfig = k.config.TLSInfo().ServerTLS
 	}
 
-	httpTransport := transport.NewHttpTransport(transportOpts)
-
 	daemon, err := groupcache.ListenAndServe(ctx, k.hostNode.Address(), groupcache.Options{
 		HashFn:    hashFn,
 		Replicas:  k.config.ReplicaCount(),
 		Logger:    newGLogger(k.config.Logger()),
-		Transport: httpTransport,
+		Transport: transport.NewHttpTransport(transportOpts),
 	})
 
 	if err != nil {

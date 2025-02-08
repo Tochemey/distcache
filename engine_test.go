@@ -539,6 +539,7 @@ func startSecuredEngine(t *testing.T, serverAddr string, keySpaces []KeySpace, i
 		WithBindAddr(host),
 		WithLogger(log.DiscardLogger),
 		WithDiscoveryPort(discoveryPort),
+		WithShutdownTimeout(3*time.Second),
 		WithTLS(info),
 		WithBindPort(bindPort))
 
