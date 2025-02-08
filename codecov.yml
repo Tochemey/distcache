@@ -10,4 +10,4 @@ coverage:
         base: auto
 ignore:
   - "test"
-  - "mocks
+  - "mocks"
