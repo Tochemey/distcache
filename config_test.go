@@ -40,7 +40,7 @@ import (
 func TestConfig(t *testing.T) {
 	t.Run("WithValid config", func(t *testing.T) {
 		// start the NATS server
-		srv := StartNatsServer(t)
+		srv := startNatsServer(t)
 		serverAddress := srv.Addr().String()
 		// generate the ports for the single startNode
 		ports := dynaport.Get(1)
@@ -70,7 +70,7 @@ func TestConfig(t *testing.T) {
 	})
 }
 
-func StartNatsServer(t *testing.T) *natsserver.Server {
+func startNatsServer(t *testing.T) *natsserver.Server {
 	t.Helper()
 	serv, err := natsserver.NewServer(&natsserver.Options{
 		Host: "127.0.0.1",

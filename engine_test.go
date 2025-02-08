@@ -39,13 +39,108 @@ import (
 	"github.com/tochemey/distcache/discovery/nats"
 	"github.com/tochemey/distcache/internal/size"
 	"github.com/tochemey/distcache/internal/util"
+	"github.com/tochemey/distcache/log"
 )
 
 func TestEngine(t *testing.T) {
+	t.Run("With KeySpace Not Found error", func(t *testing.T) {
+		ctx := context.Background()
+
+		srv := startNatsServer(t)
+		serverAddress := srv.Addr().String()
+
+		dataSource := NewMockDataSource()
+		keySpace := "users"
+
+		engine, provider := startEngine(t, serverAddress, []KeySpace{
+			NewMockKeySpace(keySpace, size.MB, dataSource),
+		})
+		require.NotNil(t, engine)
+		require.NotNil(t, provider)
+
+		user := &User{
+			ID:   "user1",
+			Name: "user",
+			Age:  10,
+		}
+
+		bytea, err := json.Marshal(user)
+		require.NoError(t, err)
+
+		entry := &Entry{
+			KV: KV{
+				Key:   "users",
+				Value: bytea,
+			},
+		}
+
+		// put when keyspace does not exist
+		err = engine.Put(ctx, "invalid Space", entry)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrKeySpaceNotFound)
+
+		// delete when keyspace does not exist
+		err = engine.Delete(ctx, "invalid Space", "users")
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrKeySpaceNotFound)
+
+		err = engine.DeleteMany(ctx, "ivalid Space", []string{"keys"})
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrKeySpaceNotFound)
+
+		require.NoError(t, engine.Stop(ctx))
+		require.NoError(t, provider.Close())
+		srv.Shutdown()
+	})
+	t.Run("With PutMany", func(t *testing.T) {
+		ctx := context.Background()
+
+		srv := startNatsServer(t)
+		serverAddress := srv.Addr().String()
+
+		dataSource := NewMockDataSource()
+		keySpace := "users"
+
+		engine, provider := startEngine(t, serverAddress, []KeySpace{
+			NewMockKeySpace(keySpace, size.MB, dataSource),
+		})
+		require.NotNil(t, engine)
+		require.NotNil(t, provider)
+
+		user := &User{
+			ID:   "user1",
+			Name: "user",
+			Age:  10,
+		}
+
+		bytea, err := json.Marshal(user)
+		require.NoError(t, err)
+
+		entries := []*Entry{
+			{
+				KV: KV{
+					Key:   "users",
+					Value: bytea,
+				},
+			},
+		}
+
+		// When keySpace exist
+		err = engine.PutMany(ctx, keySpace, entries)
+		require.NoError(t, err)
+
+		err = engine.PutMany(ctx, "invalid Space", entries)
+		require.Error(t, err)
+		require.ErrorIs(t, err, ErrKeySpaceNotFound)
+
+		require.NoError(t, engine.Stop(ctx))
+		require.NoError(t, provider.Close())
+		srv.Shutdown()
+	})
 	t.Run("With caching operations in cluster", func(t *testing.T) {
 		ctx := context.Background()
 
-		srv := StartNatsServer(t)
+		srv := startNatsServer(t)
 		serverAddress := srv.Addr().String()
 
 		// three names space with three data sources
@@ -121,6 +216,16 @@ func TestEngine(t *testing.T) {
 		require.Equal(t, user2.ID, kv.Key)
 		require.True(t, bytes.Equal(bytea, kv.Value))
 
+		err = engine3.Delete(ctx, keySpace2, user2.ID)
+		require.NoError(t, err)
+
+		// fetching it will go to the data source and fetch it
+		kv, err = engine1.Get(ctx, keySpace2, user2.ID)
+		require.NoError(t, err)
+		require.NotNil(t, kv)
+		require.Equal(t, user2.ID, kv.Key)
+		require.True(t, bytes.Equal(bytea, kv.Value))
+
 		require.NoError(t, engine1.Stop(ctx))
 		require.NoError(t, engine2.Stop(ctx))
 		require.NoError(t, engine3.Stop(ctx))
@@ -134,7 +239,7 @@ func TestEngine(t *testing.T) {
 	t.Run("With cluster topology changes", func(t *testing.T) {
 		ctx := context.Background()
 
-		srv := StartNatsServer(t)
+		srv := startNatsServer(t)
 		serverAddress := srv.Addr().String()
 
 		// three names space with three data sources
@@ -238,6 +343,7 @@ func startEngine(t *testing.T, serverAddr string, keySpaces []KeySpace) (Engine,
 
 	config := NewConfig(provider, keySpaces,
 		WithBindAddr(host),
+		WithLogger(log.DiscardLogger),
 		WithDiscoveryPort(discoveryPort),
 		WithBindPort(bindPort))
 
