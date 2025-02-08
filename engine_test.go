@@ -86,7 +86,6 @@ func TestEngine(t *testing.T) {
 			net.JoinHostPort(host, strconv.Itoa(discoveryPort)),
 		}
 		err = errors.New("some error")
-		provider.EXPECT().ID().Return("mockProvider")
 		provider.EXPECT().Initialize().Return(nil)
 		provider.EXPECT().Register().Return(err)
 		provider.EXPECT().DiscoverPeers().Return(addrs, nil)
