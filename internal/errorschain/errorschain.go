@@ -24,7 +24,7 @@
 
 package errorschain
 
-import "github.com/groupcache/groupcache-go/v3"
+import "go.uber.org/multierr"
 
 // Chain defines an error chain
 type Chain struct {
@@ -55,9 +55,15 @@ func (c *Chain) AddError(err error) *Chain {
 	return c
 }
 
+// AddErrors add a slice of errors to the chain. Remember the slice order does matter here
+func (c *Chain) AddErrors(errs ...error) *Chain {
+	c.errs = append(c.errs, errs...)
+	return c
+}
+
 // Error returns the error
 func (c *Chain) Error() error {
-	var merr = &groupcache.MultiError{}
+	var err error
 	for _, v := range c.errs {
 		if v != nil {
 			if c.returnFirst {
@@ -65,10 +71,10 @@ func (c *Chain) Error() error {
 				return v
 			}
 			// append error to the violations
-			merr.Add(v)
+			err = multierr.Append(err, v)
 		}
 	}
-	return merr.NilOrError()
+	return err
 }
 
 // ReturnFirst sets whether a chain should stop validation on first error.
