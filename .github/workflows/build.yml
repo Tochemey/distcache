@@ -1,0 +1,57 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**/README.md'
+      - '**/bench/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_COLOR: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+          fetch-depth: 0
+      - uses: wagoid/commitlint-github-action@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.0'
+          check-latest: true
+          cache-dependency-path: "**/*.sum"
+      - run: go version
+      - name: Vendoring and Tidy
+        run: go mod tidy && go mod vendor
+      - name: Vendoring and Tidy
+        run: go mod tidy && go mod vendor
+      - name: Run tests
+        run: |
+          go test -mod=vendor ./... -race -v -coverprofile=coverage.out -covermode=atomic -coverpkg=./...
+      - uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.out
+          fail_ci_if_error: false
+          verbose: true
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.0'
+          check-latest: true
+          cache-dependency-path: "**/*.sum"
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62.2
+          args: --timeout 10m --config .golangci.yml
