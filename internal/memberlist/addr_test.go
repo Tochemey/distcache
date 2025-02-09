@@ -22,47 +22,16 @@
  * SOFTWARE.
  */
 
-package tcp
+package memberlist
 
 import (
-	"net"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestGetHostPort(t *testing.T) {
-	t.Run("Happy Path", func(t *testing.T) {
-		address := "localhost:8080"
-		host, port, err := GetHostPort(address)
-		require.NoError(t, err)
-		assert.Equal(t, "127.0.0.1", host)
-		assert.Exactly(t, 8080, port)
-	})
-	t.Run("Invalid address", func(t *testing.T) {
-		_, _, err := GetHostPort("127.0.0.1.1.1.1.1.2:8080")
-		require.Error(t, err)
-	})
-}
-
-func TestGetBindIP(t *testing.T) {
-	t.Run("Happy Path", func(t *testing.T) {
-		address := "localhost:8080"
-		ifaces, err := net.Interfaces()
-		require.NoError(t, err)
-		ifname := ifaces[0].Name
-		bindIP, err := GetBindIP(ifname, address)
-		require.NoError(t, err)
-		assert.Equal(t, "127.0.0.1", bindIP)
-	})
-}
-
-func TestNewKeepAliveListener(t *testing.T) {
-	t.Run("Happy Path", func(t *testing.T) {
-		address := "localhost:8080"
-		lnr, err := NewKeepAliveListener(address)
-		require.NoError(t, err)
-		require.NotNil(t, lnr)
-	})
+func TestAddr(t *testing.T) {
+	address := "127.0.0.1:1234"
+	actual := addr(address)
+	assert.Equal(t, "tcp", actual.Network())
 }

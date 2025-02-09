@@ -144,14 +144,14 @@ func NewKeepAliveListener(address string) (*KeepAliveListener, error) {
 func getBindIPFromNetworkInterface(addrs []net.Addr) (string, error) {
 	for _, a := range addrs {
 		var addrIP net.IP
-		if runtime.GOOS == "windows" {
-			// Waiting for https://github.com/golang/go/issues/5395 to use IPNet only
+		switch {
+		case runtime.GOOS == "windows":
 			addr, ok := a.(*net.IPAddr)
 			if !ok {
 				continue
 			}
 			addrIP = addr.IP
-		} else {
+		default:
 			addr, ok := a.(*net.IPNet)
 			if !ok {
 				continue

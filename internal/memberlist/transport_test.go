@@ -138,7 +138,22 @@ func TestTCPTransport(t *testing.T) {
 		assert.NotEqual(t, ports[0], port)
 		assert.NoError(t, transport.Shutdown())
 	})
+	t.Run("With FinalAdvertiseAddr with zeroZeroZeroZero", func(t *testing.T) {
+		host := zeroZeroZeroZero
+		transport, err := NewTCPTransport(TCPTransportConfig{
+			BindAddrs: []string{host},
+			BindPort:  0,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, transport)
+		ports := dynaport.Get(1)
 
+		ip, port, err := transport.FinalAdvertiseAddr("", ports[0])
+		require.NoError(t, err)
+		require.NotNil(t, ip)
+		assert.NotEqual(t, ports[0], port)
+		assert.NoError(t, transport.Shutdown())
+	})
 	t.Run("With FinalAdvertiseAddr with invalid address", func(t *testing.T) {
 		host := "127.0.0.1"
 		transport, err := NewTCPTransport(TCPTransportConfig{
