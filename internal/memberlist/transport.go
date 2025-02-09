@@ -34,11 +34,11 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/go-sockaddr"
 	"github.com/hashicorp/memberlist"
-	"go.uber.org/atomic"
 
 	"github.com/tochemey/distcache/log"
 )
@@ -95,6 +95,9 @@ func NewTCPTransport(config TCPTransportConfig) (*TCPTransport, error) {
 	port := config.BindPort
 	for _, addr := range config.BindAddrs {
 		ip := net.ParseIP(addr)
+		if ip == nil {
+			return nil, fmt.Errorf("invalid address: %s", addr)
+		}
 
 		tcpAddr := &net.TCPAddr{IP: ip, Port: port}
 
