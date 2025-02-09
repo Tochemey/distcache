@@ -67,7 +67,7 @@ go get github.com/tochemey/distcache
 
 To integrate `DistCache` into your project, one only need to implement two key interfaces that are needed in the [Config](./config.go) to start the `DistCache` [Engine](./engine.go).
 
-### 1. Implement the DataSource Interface
+### 1. DataSource Interface
 
 The [DataSource](./datasource.go) interface tells `DistCache` where to fetch data from when a cache miss occurs. This could be any external source such as a database, an API, or even a file system.
 
@@ -88,7 +88,7 @@ func (ds *MyDataSource) Fetch(ctx context.Context, key string) ([]byte, error) {
 }
 ````
 
-### 2.  Implement the KeySpace Interface
+### 2.  KeySpace Interface
 The [KeySpace](./keyspace.go) interface defines a `logical namespace for grouping` key/value pairs. It provides metadata such as the namespace's name, storage limits, and expiration logic for keys.
 KeySpaces are loaded during `DistCache` bootstrap. 
 
