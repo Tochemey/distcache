@@ -22,8 +22,8 @@ in the cache, and serves it to the client. This approach reduces direct database
 - [Use Cases](#use-cases)
 - [Installation](#installation)
 - [Get Started](#get-started)
-    - [DataSource](#1-datasource)
-    - [Keyspace](#2-keyspace)
+    - [DataSource](#datasource)
+    - [Keyspace](#keyspace)
 
 ## Features
 
@@ -68,9 +68,9 @@ go get github.com/tochemey/distcache
 
 ## Get Started
 
-To integrate `DistCache` into your project, one only need to implement two key interfaces that are needed in the [Config](./config.go) to start the `DistCache` [Engine](./engine.go).
+To integrate `DistCache` into your project, one only need to implement `two key interfaces` that are needed in the [Config](./config.go) to start the `DistCache` [Engine](./engine.go).
 
-### 1. DataSource
+### DataSource
 
 The [DataSource](./datasource.go) interface tells `DistCache` where to fetch data from when a cache miss occurs. This could be any external source such as a database, an API, or even a file system.
 
@@ -91,7 +91,8 @@ func (ds *MyDataSource) Fetch(ctx context.Context, key string) ([]byte, error) {
 }
 ````
 
-### 2.  KeySpace
+### KeySpace
+
 The [KeySpace](./keyspace.go) interface defines a `logical namespace for grouping` key/value pairs. It provides metadata such as the namespace's name, storage limits, and expiration logic for keys.
 KeySpaces are loaded during `DistCache` bootstrap. 
 
