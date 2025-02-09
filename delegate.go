@@ -25,11 +25,14 @@
 package distcache
 
 import (
+	"sync"
+
 	"github.com/hashicorp/memberlist"
 )
 
 // delegate implements memberlist Delegate
 type delegate struct {
+	sync.RWMutex
 	meta []byte
 }
 
@@ -47,6 +50,8 @@ func newDelegate(meta []byte) *delegate {
 // the given byte size. This metadata is available in the Node structure.
 // nolint
 func (x *delegate) NodeMeta(limit int) []byte {
+	x.RLock()
+	defer x.RUnlock()
 	return x.meta
 }
 

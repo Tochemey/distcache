@@ -31,6 +31,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -278,6 +279,7 @@ type mockCluster struct {
 }
 
 type delegate struct {
+	sync.Mutex
 	Msgs [][]byte
 }
 
@@ -288,6 +290,8 @@ func (d *delegate) NodeMeta(limit int) []byte {
 
 // nolint
 func (d *delegate) NotifyMsg(m []byte) {
+	d.Mutex.Lock()
+	defer d.Mutex.Unlock()
 	d.Msgs = append(d.Msgs, m)
 }
 
