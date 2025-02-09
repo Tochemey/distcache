@@ -11,6 +11,7 @@ automatically fetching and storing data when requested. If data is not in the ca
 in the cache, and serves it to the client. This approach reduces direct database queries, improves response times, and enhances system scalability.
 
 `DistCache` was built to be scalable and high available. With `DistCache`, you can instantly create a fast, scalable, distributed system across a cluster of computers.
+
 `DistCache` caching engine is powered by the battle-tested [group cache](https://github.com/groupcache/groupcache-go).
 
 ## Table Of Content

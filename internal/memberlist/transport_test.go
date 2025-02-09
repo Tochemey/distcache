@@ -164,7 +164,7 @@ func TestTCPTransport(t *testing.T) {
 		require.NoError(t, err)
 
 		util.Pause(time.Second)
-		require.Len(t, cluster.delegates[1].Msgs, 1)
+		require.Len(t, cluster.delegates[1].Messages(), 1)
 	})
 	t.Run("SendReliable", func(t *testing.T) {
 		cluster, cleanup := makeCluster(t)
@@ -175,7 +175,7 @@ func TestTCPTransport(t *testing.T) {
 		require.NoError(t, err)
 
 		util.Pause(time.Second)
-		require.Len(t, cluster.delegates[1].Msgs, 1)
+		require.Len(t, cluster.delegates[1].Messages(), 1)
 	})
 }
 
@@ -280,7 +280,7 @@ type mockCluster struct {
 
 type delegate struct {
 	sync.Mutex
-	Msgs [][]byte
+	messages [][]byte
 }
 
 // nolint
@@ -288,11 +288,17 @@ func (d *delegate) NodeMeta(limit int) []byte {
 	return []byte{}
 }
 
+func (d *delegate) Messages() [][]byte {
+	d.Mutex.Lock()
+	defer d.Mutex.Unlock()
+	return d.messages
+}
+
 // nolint
 func (d *delegate) NotifyMsg(m []byte) {
 	d.Mutex.Lock()
 	defer d.Mutex.Unlock()
-	d.Msgs = append(d.Msgs, m)
+	d.messages = append(d.messages, m)
 }
 
 // nolint
