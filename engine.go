@@ -413,8 +413,8 @@ func (k *engine) Stop(ctx context.Context) error {
 	if err := errorschain.
 		New(errorschain.ReturnFirst()).
 		AddError(k.mlist.Leave(k.config.ShutdownTimeout())).
-		AddError(provider.Close()).
 		AddError(provider.Deregister()).
+		AddError(provider.Close()).
 		AddError(k.mlist.Shutdown()).
 		AddError(k.daemon.Shutdown(ctx)).
 		Error(); err != nil {
