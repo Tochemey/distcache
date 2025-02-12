@@ -18,12 +18,14 @@ in the cache, and serves it to the client. This approach reduces direct database
 ## 👋 Table Of Content
 
 - [Features](#-features)
+- [Engine](#-engine)
 - [How It Works](#how-it-works)
 - [Use Cases](#-use-cases)
 - [Installation](#-installation)
 - [Get Started](#-get-started)
     - [DataSource](#datasource)
     - [Keyspace](#keyspace)
+- [Example](#example)
 
 ## ⭐️ Features
 
@@ -42,6 +44,26 @@ in the cache, and serves it to the client. This approach reduces direct database
 - **TLS Support**: `DistCache` comes bundled with TLS support. All nodes must share the same root Certificate Authority (CA) to ensure a successful handshake.
   TLS can be enabled in the [config](./config.go) with the option `WithTLS` method. This method allows you to configure both the TLS server and client settings.
   The TLS configuration is essential for enabling secure communication between nodes.
+
+## ⚙️ Engine
+
+All the above features is powered by the DistCache [Engine](./engine.go) which provides a set of utility methods for interacting with the cache efficiently:
+
+### Core Methods
+
+- `Put(ctx context.Context, keyspace string, entry *Entry) error`: stores a single key/value pair in the cache.
+- `PutMany(ctx context.Context, keyspace string, entries []*Entry) error`: stores multiple key/value pairs in the cache
+- `Get(ctx context.Context, keyspace string, key string) (*KV, error)`: retrieves a specific key/value pair from the cache.
+- `Delete(ctx context.Context, keyspace string, key string) error`: Delete removes a specific key/value pair from the cache.
+- `DeleteMany(ctx context.Context, keyspace string, keys []string) error`: DeleteMany removes multiple key/value pairs from the cache.
+
+### KeySpace Management
+
+- `DeleteKeySpace(ctx context.Context, keyspace string) error`: delete a given keySpace from the cache.
+- `DeleteKeyspaces(ctx context.Context, keyspaces []string) error`: removes multiple keyspaces from the cache.
+- `KeySpaces() []string`: returns the list of available KeySpaces from the cache.
+
+The DistCache Engine is designed to optimize cache interactions, ensuring high performance and scalability across various workloads in the cluster.
 
 ## 📝 How It Works
 
@@ -125,6 +147,7 @@ type KeySpace interface {
 }
 ```
 
+## Example
 More information on Get Started can be found in the [example](./example) folder.
 
 ## 🤲 Contribution
