@@ -19,7 +19,7 @@ in the cache, and serves it to the client. This approach reduces direct database
 
 - [Features](#-features)
 - [Engine](#-engine)
-- [How It Works](#how-it-works)
+- [How It Works](#-how-it-works)
 - [Use Cases](#-use-cases)
 - [Installation](#-installation)
 - [Get Started](#-get-started)
@@ -51,11 +51,11 @@ All the above features is powered by the DistCache [Engine](./engine.go) which p
 
 ### Core Methods
 
-- `Put(ctx context.Context, keyspace string, entry *Entry) error`: stores a single key/value pair in the cache.
-- `PutMany(ctx context.Context, keyspace string, entries []*Entry) error`: stores multiple key/value pairs in the cache
-- `Get(ctx context.Context, keyspace string, key string) (*KV, error)`: retrieves a specific key/value pair from the cache.
-- `Delete(ctx context.Context, keyspace string, key string) error`: Delete removes a specific key/value pair from the cache.
-- `DeleteMany(ctx context.Context, keyspace string, keys []string) error`: DeleteMany removes multiple key/value pairs from the cache.
+- `Put(ctx context.Context, keyspace string, entry *Entry) error`: stores a single key/value pair in the cache for a given keyspace.
+- `PutMany(ctx context.Context, keyspace string, entries []*Entry) error`: stores multiple key/value pairs in the cache for a given keyspace.
+- `Get(ctx context.Context, keyspace string, key string) (*KV, error)`: retrieves a specific key/value pair from the cache for a given keyspace.
+- `Delete(ctx context.Context, keyspace string, key string) error`: Delete removes a specific key/value pair from the cache for a given keyspace.
+- `DeleteMany(ctx context.Context, keyspace string, keys []string) error`: DeleteMany removes multiple key/value pairs from the cache for a given keyspace.
 
 ### KeySpace Management
 
@@ -96,7 +96,7 @@ To integrate `DistCache` into your project, one only need to implement `two key 
 
 The [DataSource](./datasource.go) interface tells `DistCache` where to fetch data from when a cache miss occurs. This could be any external source such as a database, an API, or even a file system.
 
-````go
+```go
 // DataSource defines the interface used by `distcache` to retrieve data
 // when a requested entry is not found in the cache. Implementations of this
 // interface provide a mechanism to fetch data from an external source, such
@@ -114,7 +114,7 @@ type DataSource interface {
     //   - An error if the data retrieval fails.
     Fetch(ctx context.Context, key string) ([]byte, error)
 }
-````
+```
 
 ### KeySpace
 
