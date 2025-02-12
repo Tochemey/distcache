@@ -15,17 +15,17 @@ in the cache, and serves it to the client. This approach reduces direct database
 
 `DistCache` caching engine is powered by the battle-tested [group cache](https://github.com/groupcache/groupcache-go).
 
-## Table Of Content
+## 👋 Table Of Content
 
-- [Features](#features)
+- [Features](#-features)
 - [How It Works](#how-it-works)
-- [Use Cases](#use-cases)
-- [Installation](#installation)
-- [Get Started](#get-started)
+- [Use Cases](#-use-cases)
+- [Installation](#-installation)
+- [Get Started](#-get-started)
     - [DataSource](#datasource)
     - [Keyspace](#keyspace)
 
-## Features
+## ⭐️ Features
 
 - **Automatic Fetching**: Data is loaded into the cache on a cache miss.
 - **Distributed Architecture**: The cache is spread across multiple nodes for scalability and availability.
@@ -43,7 +43,7 @@ in the cache, and serves it to the client. This approach reduces direct database
   TLS can be enabled in the [config](./config.go) with the option `WithTLS` method. This method allows you to configure both the TLS server and client settings.
   The TLS configuration is essential for enabling secure communication between nodes.
 
-## How It Works
+## 📝 How It Works
 
 1. Cache Lookup: The application requests data from the cache.
 2. Cache Hit (Data Exists): The cache returns the requested data.
@@ -54,19 +54,19 @@ in the cache, and serves it to the client. This approach reduces direct database
 4. Subsequent Requests: Future requests for the same data are served from the cache until the data expires or is
    evicted.
 
-## Use Cases
+## 💡 Use Cases
 
 - **High-Traffic Applications** – Reduce load on databases (e.g., e-commerce, social media).
 - **API Caching** – Store API responses to avoid redundant network calls.
 - **Session Storage** – Maintain fast access to user sessions in distributed systems.
 
-## Installation
+## 💻 Installation
 
 ```bash
 go get github.com/tochemey/distcache
 ```
 
-## Get Started
+## 🚀 Get Started
 
 To integrate `DistCache` into your project, one only need to implement `two key interfaces` that are needed in the [Config](./config.go) to start the `DistCache` [Engine](./engine.go).
 
@@ -74,20 +74,23 @@ To integrate `DistCache` into your project, one only need to implement `two key 
 
 The [DataSource](./datasource.go) interface tells `DistCache` where to fetch data from when a cache miss occurs. This could be any external source such as a database, an API, or even a file system.
 
-#### Example:
-
 ````go
-// MyDataSource implements the DataSource interface.
-type MyDataSource struct{}
-
-// Fetch retrieves data for a given key. Replace this with your actual data fetching logic.
-func (ds *MyDataSource) Fetch(ctx context.Context, key string) ([]byte, error) {
-	if key == "" {
-		return nil, errors.New("empty key provided")
-	}
-	// Simulate data fetching. In practice, query your database, API, etc.
-	data := fmt.Sprintf("Data for key: %s", key)
-	return []byte(data), nil
+// DataSource defines the interface used by `distcache` to retrieve data
+// when a requested entry is not found in the cache. Implementations of this
+// interface provide a mechanism to fetch data from an external source, such
+// as a database, API, or file system.
+type DataSource interface {
+    // Fetch retrieves the value associated with the given key from the data source.
+    // It is called when a cache miss occurs.
+    //
+    // Parameters:
+    //   - ctx: A context for managing timeouts, cancellations, or deadlines.
+    //   - key: The cache key whose value needs to be fetched.
+    //
+    // Returns:
+    //   - A byte slice containing the fetched data.
+    //   - An error if the data retrieval fails.
+    Fetch(ctx context.Context, key string) ([]byte, error)
 }
 ````
 
@@ -96,40 +99,35 @@ func (ds *MyDataSource) Fetch(ctx context.Context, key string) ([]byte, error) {
 The [KeySpace](./keyspace.go) interface defines a `logical namespace for grouping` key/value pairs. It provides metadata such as the namespace's name, storage limits, and expiration logic for keys.
 KeySpaces are loaded during `DistCache` bootstrap. 
 
-#### Example:
-
 ```go
-// MyKeySpace implements the KeySpace interface.
-type MyKeySpace struct {
-	name       string
-	maxBytes   int64
-	dataSource *MyDataSource
-}
+// KeySpace defines a logical namespace for storing key-value pairs in a distributed cache.
+// It provides metadata about the namespace, including its name, storage limits, and data source.
+// Additionally, it allows checking when a specific key is set to expire.
+type KeySpace interface {
+	// Name returns the name of the namespace.
+	// The namespace is used to logically group key-value pairs.
+	Name() string
 
-// Name returns the name of the keyspace.
-func (ks *MyKeySpace) Name() string {
-	return ks.name
-}
+	// MaxBytes returns the maximum number of bytes allocated for this namespace.
+	// Once the limit is reached, the cache may evict entries based on its eviction policy.
+	MaxBytes() int64
 
-// MaxBytes returns the maximum number of bytes allocated for this keyspace.
-func (ks *MyKeySpace) MaxBytes() int64 {
-	return ks.maxBytes
-}
+	// DataSource returns the underlying data source for this namespace.
+	// This source is used to fetch data in case of a cache miss.
+	DataSource() DataSource
 
-// DataSource returns the data source for fetching data on a cache miss.
-func (ks *MyKeySpace) DataSource() DataSource {
-	return ks.dataSource
-}
-
-// ExpiresAt returns the expiration time for a given key.
-// For example, keys may expire after 10 minutes.
-func (ks *MyKeySpace) ExpiresAt(ctx context.Context, key string) time.Time {
-	return time.Now().Add(10 * time.Minute)
+	// ExpiresAt returns the expiration time for a given key within the namespace.
+	// If the key does not have a predefined expiration time, it may return a zero time.
+	//
+	// ctx: Context for managing timeouts or cancellations.
+	// key: The cache key whose expiration time is being queried.
+	ExpiresAt(ctx context.Context, key string) time.Time
 }
 ```
 
+More information on Get Started can be found in the [example](./example) folder.
 
-## Contribution
+## 🤲 Contribution
 
 Contributions are welcome!
 The project adheres to [Semantic Versioning](https://semver.org)
