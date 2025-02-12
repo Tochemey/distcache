@@ -11,3 +11,4 @@ coverage:
 ignore:
   - "test"
   - "mocks"
+  - "example"
