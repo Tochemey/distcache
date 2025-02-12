@@ -51,17 +51,17 @@ All the above features is powered by the DistCache [Engine](./engine.go) which p
 
 ### Core Methods
 
-- `Put(ctx context.Context, keyspace string, entry *Entry) error`: stores a single key/value pair in the cache for a given keyspace.
-- `PutMany(ctx context.Context, keyspace string, entries []*Entry) error`: stores multiple key/value pairs in the cache for a given keyspace.
-- `Get(ctx context.Context, keyspace string, key string) (*KV, error)`: retrieves a specific key/value pair from the cache for a given keyspace.
-- `Delete(ctx context.Context, keyspace string, key string) error`: Delete removes a specific key/value pair from the cache for a given keyspace.
-- `DeleteMany(ctx context.Context, keyspace string, keys []string) error`: DeleteMany removes multiple key/value pairs from the cache for a given keyspace.
+- `Put`: stores a single key/value pair in the cache for a given keyspace.
+- `PutMany`: stores multiple key/value pairs in the cache for a given keyspace.
+- `Get`: retrieves a specific key/value pair from the cache for a given keyspace.
+- `Delete`: Delete removes a specific key/value pair from the cache for a given keyspace.
+- `DeleteMany`: DeleteMany removes multiple key/value pairs from the cache for a given keyspace.
 
 ### KeySpace Management
 
-- `DeleteKeySpace(ctx context.Context, keyspace string) error`: delete a given keySpace from the cache.
-- `DeleteKeyspaces(ctx context.Context, keyspaces []string) error`: removes multiple keyspaces from the cache.
-- `KeySpaces() []string`: returns the list of available KeySpaces from the cache.
+- `DeleteKeySpace`: delete a given keySpace from the cache.
+- `DeleteKeyspaces`: removes multiple keyspaces from the cache.
+- `KeySpaces()`: returns the list of available KeySpaces from the cache.
 
 The DistCache Engine is designed to optimize cache interactions, ensuring high performance and scalability across various workloads in the cluster.
 
@@ -92,58 +92,103 @@ go get github.com/tochemey/distcache
 
 To integrate `DistCache` into your project, one only need to implement `two key interfaces` that are needed in the [Config](./config.go) to start the `DistCache` [Engine](./engine.go).
 
-### DataSource
+- [DataSource](./datasource.go): tells `DistCache` where to fetch data from when a cache miss occurs. This could be any external source such as a database, an API, or even a file system.
+- [KeySpace](./keyspace.go): defines a `logical namespace for grouping` key/value pairs. It provides metadata such as the namespace's name, storage limits, and expiration logic for keys. KeySpaces are loaded during `DistCache` bootstrap. 
 
-The [DataSource](./datasource.go) interface tells `DistCache` where to fetch data from when a cache miss occurs. This could be any external source such as a database, an API, or even a file system.
-
+## Example
 ```go
-// DataSource defines the interface used by `distcache` to retrieve data
-// when a requested entry is not found in the cache. Implementations of this
-// interface provide a mechanism to fetch data from an external source, such
-// as a database, API, or file system.
-type DataSource interface {
-    // Fetch retrieves the value associated with the given key from the data source.
-    // It is called when a cache miss occurs.
-    //
-    // Parameters:
-    //   - ctx: A context for managing timeouts, cancellations, or deadlines.
-    //   - key: The cache key whose value needs to be fetched.
-    //
-    // Returns:
-    //   - A byte slice containing the fetched data.
-    //   - An error if the data retrieval fails.
-    Fetch(ctx context.Context, key string) ([]byte, error)
+type User struct {
+	ID   string
+	Name string
+	Age  int
 }
-```
 
-### KeySpace
+type UsersKeySpace struct {
+	*sync.RWMutex
+	name       string
+	maxBytes   int64
+	dataSource *UsersDataSource
+}
 
-The [KeySpace](./keyspace.go) interface defines a `logical namespace for grouping` key/value pairs. It provides metadata such as the namespace's name, storage limits, and expiration logic for keys.
-KeySpaces are loaded during `DistCache` bootstrap. 
+var _ distcache.KeySpace = (*UsersKeySpace)(nil)
 
-```go
-// KeySpace defines a logical namespace for storing key-value pairs in a distributed cache.
-// It provides metadata about the namespace, including its name, storage limits, and data source.
-// Additionally, it allows checking when a specific key is set to expire.
-type KeySpace interface {
-	// Name returns the name of the namespace.
-	// The namespace is used to logically group key-value pairs.
-	Name() string
+func NewUsersKeySpace(maxBytes int64, source *UsersDataSource) *UsersKeySpace {
+	return &UsersKeySpace{
+		RWMutex:    &sync.RWMutex{},
+		name:       "users",
+		maxBytes:   maxBytes,
+		dataSource: source,
+	}
+}
 
-	// MaxBytes returns the maximum number of bytes allocated for this namespace.
-	// Once the limit is reached, the cache may evict entries based on its eviction policy.
-	MaxBytes() int64
+func (x *UsersKeySpace) Name() string {
+	x.RLock()
+	defer x.RUnlock()
+	return x.name
+}
 
-	// DataSource returns the underlying data source for this namespace.
-	// This source is used to fetch data in case of a cache miss.
-	DataSource() DataSource
+func (x *UsersKeySpace) MaxBytes() int64 {
+	x.RLock()
+	defer x.RUnlock()
+	return x.maxBytes
+}
 
-	// ExpiresAt returns the expiration time for a given key within the namespace.
-	// If the key does not have a predefined expiration time, it may return a zero time.
-	//
-	// ctx: Context for managing timeouts or cancellations.
-	// key: The cache key whose expiration time is being queried.
-	ExpiresAt(ctx context.Context, key string) time.Time
+func (x *UsersKeySpace) DataSource() distcache.DataSource {
+	x.RLock()
+	defer x.RUnlock()
+	return x.dataSource
+}
+
+func (x *UsersKeySpace) ExpiresAt(ctx context.Context, key string) time.Time {
+	x.Lock()
+	defer x.Unlock()
+
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	if _, err := x.dataSource.Fetch(ctx, key); err != nil {
+		return time.Now().Add(time.Second)
+	}
+
+	return time.Time{}
+}
+
+type UsersDataSource struct {
+	store *syncmap.SyncMap[string, User]
+}
+
+var _ distcache.DataSource = (*UsersDataSource)(nil)
+
+func NewUsersDataSource() *UsersDataSource {
+	return &UsersDataSource{
+		store: syncmap.New[string, User](),
+	}
+}
+
+func (x *UsersDataSource) Insert(ctx context.Context, users []*User) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	for _, user := range users {
+		x.store.Set(user.ID, *user)
+	}
+	return nil
+}
+
+func (x *UsersDataSource) Fetch(ctx context.Context, key string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	user, ok := x.store.Get(key)
+	if !ok {
+		return nil, errors.New("not found")
+	}
+
+	bytea, err := json.Marshal(user)
+	if err != nil {
+		return nil, err
+	}
+	return bytea, nil
 }
 ```
 
