@@ -85,3 +85,13 @@ func TestForEach(t *testing.T) {
 		t.Errorf("Expected keys 1 and 2, got %v", keys)
 	}
 }
+
+func TestKeys(t *testing.T) {
+	sm := New[int, string]()
+	sm.Set(1, "one")
+	sm.Set(2, "two")
+	keys := sm.Keys()
+	assert.Exactly(t, 2, len(keys))
+	slices.Sort(keys)
+	assert.ElementsMatch(t, []int{1, 2}, keys)
+}

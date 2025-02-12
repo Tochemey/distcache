@@ -488,6 +488,62 @@ func TestEngine(t *testing.T) {
 
 		srv.Shutdown()
 	})
+	t.Run("With Delete KeySpace", func(t *testing.T) {
+		ctx := context.Background()
+
+		srv := startNatsServer(t)
+		serverAddress := srv.Addr().String()
+
+		dataSource := NewMockDataSource()
+		keySpace := "users"
+
+		engine, provider := startEngine(t, serverAddress, []KeySpace{
+			NewMockKeySpace(keySpace, size.MB, dataSource),
+		})
+		require.NotNil(t, engine)
+		require.NotNil(t, provider)
+
+		keySpaces := engine.KeySpaces()
+		require.Len(t, keySpaces, 1)
+
+		err := engine.DeleteKeySpace(ctx, keySpace)
+		require.NoError(t, err)
+
+		keySpaces = engine.KeySpaces()
+		require.Zero(t, len(keySpaces))
+
+		require.NoError(t, engine.Stop(ctx))
+		require.NoError(t, provider.Close())
+		srv.Shutdown()
+	})
+	t.Run("With Delete KeySpaces", func(t *testing.T) {
+		ctx := context.Background()
+
+		srv := startNatsServer(t)
+		serverAddress := srv.Addr().String()
+
+		dataSource := NewMockDataSource()
+		keySpace := "users"
+
+		engine, provider := startEngine(t, serverAddress, []KeySpace{
+			NewMockKeySpace(keySpace, size.MB, dataSource),
+		})
+		require.NotNil(t, engine)
+		require.NotNil(t, provider)
+
+		keySpaces := engine.KeySpaces()
+		require.Len(t, keySpaces, 1)
+
+		err := engine.DeleteKeyspaces(ctx, []string{keySpace})
+		require.NoError(t, err)
+
+		keySpaces = engine.KeySpaces()
+		require.Zero(t, len(keySpaces))
+
+		require.NoError(t, engine.Stop(ctx))
+		require.NoError(t, provider.Close())
+		srv.Shutdown()
+	})
 }
 
 func startEngine(t *testing.T, serverAddr string, keySpaces []KeySpace) (Engine, discovery.Provider) {

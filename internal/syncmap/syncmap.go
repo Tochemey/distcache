@@ -24,7 +24,10 @@
 
 package syncmap
 
-import "sync"
+import (
+	"maps"
+	"sync"
+)
 
 // SyncMap is a generic, concurrency-safe map that allows storing key-value pairs
 // while ensuring thread safety using a read-write mutex.
@@ -101,4 +104,15 @@ func (s *SyncMap[K, V]) Range(f func(K, V)) {
 	for k, v := range s.data {
 		f(k, v)
 	}
+}
+
+// Keys returns the list of all keys in the SyncMap
+func (s *SyncMap[K, V]) Keys() []K {
+	s.mu.RLock()
+	var keys []K
+	for key := range maps.Keys(s.data) {
+		keys = append(keys, key)
+	}
+	s.mu.RUnlock()
+	return keys
 }

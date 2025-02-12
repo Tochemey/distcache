@@ -62,6 +62,8 @@ import (
 //   - Get: Retrieves a specific key/value pair from the cache using its key.
 //   - Delete: Removes a specific key/value pair from the cache using its key.
 //   - DeleteMany: Removes multiple key/value pairs from the cache given their keys.
+//   - DeleteKeySpace: Remove a given keySpace from the cache
+//   - DeleteKeyspaces: Remove a set of keySpaces from the cache
 type Engine interface {
 	// Put stores a single key/value pair in the cache.
 	//
@@ -138,6 +140,29 @@ type Engine interface {
 	// Returns:
 	//   - error: An error if the shutdown process encounters issues, otherwise nil.
 	Stop(ctx context.Context) error
+
+	// DeleteKeySpace delete a given keySpace from the cache.
+	//
+	// Parameters:
+	//   - ctx: The context for cancellation and deadlines.
+	//   - keyspace: The keyspace from which to delete the key/value pairs.
+	//
+	// Returns an error if the operation fails.
+	DeleteKeySpace(ctx context.Context, keyspace string) error
+
+	// DeleteKeyspaces removes multiple keyspaces from the cache.
+	//
+	// Parameters:
+	//   - ctx: The context for cancellation and deadlines.
+	//   - keyspaces: A slice of keyspaces to be deleted.
+	//
+	// Returns an error if the operation fails.
+	DeleteKeyspaces(ctx context.Context, keyspaces []string) error
+
+	// KeySpaces returns the list of available KeySpaces from the cache.
+	//
+	// Returns an empty list if there are no keyspaces
+	KeySpaces() []string
 }
 
 type engine struct {
@@ -531,6 +556,62 @@ func (k *engine) DeleteMany(ctx context.Context, keyspace string, keys []string)
 			return err
 		}
 		cancel()
+	}
+	return nil
+}
+
+// KeySpaces returns the list of available KeySpaces from the cache.
+//
+// Returns an empty list if there are no keyspaces
+func (k *engine) KeySpaces() []string {
+	k.lock.Lock()
+	defer k.lock.Unlock()
+	return k.groups.Keys()
+}
+
+// DeleteKeySpace delete a given keySpace from the cache.
+//
+// Parameters:
+//   - ctx: The context for cancellation and deadlines.
+//   - keyspace: The keyspace from which to delete the key/value pairs.
+//
+// Returns an error if the operation fails.
+func (k *engine) DeleteKeySpace(ctx context.Context, keyspace string) error {
+	k.lock.Lock()
+	defer k.lock.Unlock()
+
+	group, ok := k.groups.Get(keyspace)
+	if !ok {
+		return ErrKeySpaceNotFound
+	}
+
+	_, cancel := context.WithTimeout(ctx, k.config.WriteTimeout())
+	defer cancel()
+
+	k.daemon.RemoveGroup(group.Name())
+	k.groups.Delete(keyspace)
+	return nil
+}
+
+// DeleteKeyspaces removes multiple keyspaces from the cache.
+//
+// Parameters:
+//   - ctx: The context for cancellation and deadlines.
+//   - keyspaces: A slice of keyspaces to be deleted.
+//
+// Returns an error if the operation fails.
+func (k *engine) DeleteKeyspaces(ctx context.Context, keyspaces []string) error {
+	k.lock.Lock()
+	defer k.lock.Unlock()
+
+	_, cancel := context.WithTimeout(ctx, k.config.WriteTimeout())
+	defer cancel()
+
+	for _, keyspace := range keyspaces {
+		if group, ok := k.groups.Get(keyspace); ok {
+			k.daemon.RemoveGroup(group.Name())
+			k.groups.Delete(keyspace)
+		}
 	}
 	return nil
 }
