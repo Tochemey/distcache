@@ -33,7 +33,7 @@ import (
 
 // Option defines a configuration option that can be applied to a Config.
 //
-// Implementations of this interface modify the scheduler's configuration when applied.
+// Implementations of this interface modify the configuration when applied.
 type Option interface {
 	// Apply applies the configuration option to the given Config instance.
 	Apply(config *Config)
