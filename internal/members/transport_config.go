@@ -22,7 +22,7 @@
  * SOFTWARE.
  */
 
-package memberlist
+package members
 
 import (
 	"crypto/tls"
@@ -31,8 +31,8 @@ import (
 	"github.com/tochemey/distcache/log"
 )
 
-// TCPTransportConfig is used to configure a net transport.
-type TCPTransportConfig struct {
+// TransportConfig is used to configure a net transport.
+type TransportConfig struct {
 	// BindAddrs is a list of addresses to bind to for both TCP and UDP
 	// communications.
 	BindAddrs []string

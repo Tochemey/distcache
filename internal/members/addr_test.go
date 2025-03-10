@@ -22,7 +22,7 @@
  * SOFTWARE.
  */
 
-package memberlist
+package members
 
 import (
 	"testing"

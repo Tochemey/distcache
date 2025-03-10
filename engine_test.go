@@ -30,8 +30,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"strconv"
 	"testing"
 	"time"
 
@@ -82,13 +80,9 @@ func TestEngine(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, engine)
 
-		addrs := []string{
-			net.JoinHostPort(host, strconv.Itoa(discoveryPort)),
-		}
 		err = errors.New("some error")
 		provider.EXPECT().Initialize().Return(nil)
 		provider.EXPECT().Register().Return(err)
-		provider.EXPECT().DiscoverPeers().Return(addrs, nil)
 
 		err = engine.Start(ctx)
 		require.Error(t, err)

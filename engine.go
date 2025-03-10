@@ -45,7 +45,7 @@ import (
 	"github.com/hashicorp/memberlist"
 
 	"github.com/tochemey/distcache/internal/errorschain"
-	internalmemberlist "github.com/tochemey/distcache/internal/memberlist"
+	"github.com/tochemey/distcache/internal/members"
 	"github.com/tochemey/distcache/internal/syncmap"
 	"github.com/tochemey/distcache/internal/tcp"
 )
@@ -236,7 +236,7 @@ func (k *engine) Start(ctx context.Context) (err error) {
 	k.lock.Lock()
 	k.config.Logger().Infof("DistCache Engine starting on [%s/%s, host=%s]...", runtime.GOOS, runtime.GOARCH, k.hostNode.Address())
 	// create the memberlist configuration
-	mtConfig := internalmemberlist.TCPTransportConfig{
+	mtConfig := members.TransportConfig{
 		BindAddrs:          []string{k.hostNode.BindAddr},
 		BindPort:           k.hostNode.DiscoveryPort,
 		PacketDialTimeout:  5 * time.Second,
@@ -250,7 +250,7 @@ func (k *engine) Start(ctx context.Context) (err error) {
 		mtConfig.TLS = k.config.TLSInfo().ServerTLS
 	}
 
-	mtransport, err := internalmemberlist.NewTCPTransport(mtConfig)
+	mtransport, err := members.NewTransport(mtConfig)
 	if err != nil {
 		k.config.Logger().Errorf("Failed to create memberlist TCP transport: %v", err)
 		return err
@@ -274,9 +274,9 @@ func (k *engine) Start(ctx context.Context) (err error) {
 	// start process
 	if err := errorschain.
 		New(errorschain.ReturnFirst()).
-		AddError(provider.Initialize()).
-		AddError(provider.Register()).
-		AddError(k.joinCluster(ctx)).
+		AddErrorFn(func() error { return provider.Initialize() }).
+		AddErrorFn(func() error { return provider.Register() }).
+		AddErrorFn(func() error { return k.joinCluster(ctx) }).
 		Error(); err != nil {
 		return err
 	}
@@ -412,11 +412,11 @@ func (k *engine) Stop(ctx context.Context) error {
 	provider := k.config.DiscoveryProvider()
 	if err := errorschain.
 		New(errorschain.ReturnFirst()).
-		AddError(k.mlist.Leave(k.config.ShutdownTimeout())).
-		AddError(provider.Deregister()).
-		AddError(provider.Close()).
-		AddError(k.mlist.Shutdown()).
-		AddError(k.daemon.Shutdown(ctx)).
+		AddErrorFn(func() error { return k.mlist.Leave(k.config.ShutdownTimeout()) }).
+		AddErrorFn(func() error { return provider.Deregister() }).
+		AddErrorFn(func() error { return provider.Close() }).
+		AddErrorFn(func() error { return k.mlist.Shutdown() }).
+		AddErrorFn(func() error { return k.daemon.Shutdown(ctx) }).
 		Error(); err != nil {
 		return err
 	}
