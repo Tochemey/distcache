@@ -2,8 +2,6 @@ module github.com/tochemey/distcache
 
 go 1.24.0
 
-toolchain go1.24.3
-
 require (
 	github.com/deckarep/golang-set/v2 v2.8.0
 	github.com/flowchartsman/retry v1.2.0
@@ -19,9 +17,9 @@ require (
 	go.uber.org/atomic v1.11.0
 	go.uber.org/multierr v1.11.0
 	go.uber.org/zap v1.27.0
-	k8s.io/api v0.33.0
-	k8s.io/apimachinery v0.33.0
-	k8s.io/client-go v0.33.0
+	k8s.io/api v0.33.1
+	k8s.io/apimachinery v0.33.1
+	k8s.io/client-go v0.33.1
 )
 
 require (
