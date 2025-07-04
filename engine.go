@@ -446,7 +446,7 @@ func (k *engine) Put(ctx context.Context, keyspace string, entry *Entry) error {
 	ctx, cancel := context.WithTimeout(ctx, k.config.WriteTimeout())
 	defer cancel()
 
-	return group.Set(ctx, entry.KV.Key, entry.KV.Value, entry.Expiry, true)
+	return group.Set(ctx, entry.Key, entry.Value, entry.Expiry, true)
 }
 
 // PutMany stores multiple key/value pairs in the cache.
@@ -468,7 +468,7 @@ func (k *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry)
 
 	for _, entry := range entries {
 		ctx, cancel := context.WithTimeout(ctx, k.config.WriteTimeout())
-		if err := group.Set(ctx, entry.KV.Key, entry.KV.Value, entry.Expiry, true); err != nil {
+		if err := group.Set(ctx, entry.Key, entry.Value, entry.Expiry, true); err != nil {
 			cancel()
 			return err
 		}

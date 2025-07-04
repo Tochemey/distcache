@@ -156,8 +156,8 @@ func main() {
 	}
 
 	process, _ := os.FindProcess(pid)
-	switch {
-	case runtime.GOOS == "windows":
+	switch runtime.GOOS {
+	case "windows":
 		_ = process.Kill()
 	default:
 		_ = process.Signal(syscall.SIGTERM)
@@ -258,7 +258,7 @@ func NewUsersDataSource() *UsersDataSource {
 }
 
 func (x *UsersDataSource) Insert(ctx context.Context, users []*User) error {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	_, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
 	for _, user := range users {

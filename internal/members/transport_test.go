@@ -44,6 +44,7 @@ import (
 	"github.com/tochemey/distcache/internal/util"
 )
 
+// nolint
 func TestTCPTransport(t *testing.T) {
 	t.Run("NewTCPTransport with empty config", func(t *testing.T) {
 		transport, err := NewTransport(TransportConfig{})
@@ -200,24 +201,24 @@ func makeCluster(t *testing.T) (*mockCluster, func()) {
 		delegates: [2]*delegate{},
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		cluster.delegates[i] = &delegate{}
 		cluster.members[i] = newNode(t, strconv.Itoa(i), cluster.delegates[i])
 	}
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		_, err := cluster.members[i].Join([]string{cluster.members[(i+1)%2].LocalNode().Address()})
 		require.NoError(t, err)
 	}
 
 	util.Pause(time.Second)
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		require.Len(t, cluster.members[i].Members(), 2)
 	}
 
 	cleanupFunc := func() {
-		for i := 0; i < 2; i++ {
+		for i := range 2 {
 			err := cluster.members[i].Shutdown()
 			if err != nil {
 				t.Fatal(err)

@@ -364,8 +364,8 @@ func (t *Transport) tcpListen(tcpLn net.Listener) {
 				break
 			}
 
-			switch {
-			case loopDelay == 0:
+			switch loopDelay {
+			case 0:
 				loopDelay = baseDelay
 			default:
 				loopDelay *= 2
