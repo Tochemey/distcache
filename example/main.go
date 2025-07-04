@@ -268,7 +268,7 @@ func (x *UsersDataSource) Insert(ctx context.Context, users []*User) error {
 }
 
 func (x *UsersDataSource) Fetch(ctx context.Context, key string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	_, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
 	user, ok := x.store.Get(key)

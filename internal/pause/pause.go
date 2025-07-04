@@ -22,7 +22,7 @@
  * SOFTWARE.
  */
 
-package util
+package pause
 
 import (
 	"time"

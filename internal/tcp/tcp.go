@@ -144,8 +144,8 @@ func NewKeepAliveListener(address string) (*KeepAliveListener, error) {
 func getBindIPFromNetworkInterface(addrs []net.Addr) (string, error) {
 	for _, a := range addrs {
 		var addrIP net.IP
-		switch {
-		case runtime.GOOS == "windows":
+		switch runtime.GOOS {
+		case "windows":
 			addr, ok := a.(*net.IPAddr)
 			if !ok {
 				continue

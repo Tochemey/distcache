@@ -161,8 +161,8 @@ func (t *Transport) FinalAdvertiseAddr(ip string, port int) (net.IP, int, error)
 		}
 		advertisePort = port
 	default:
-		switch {
-		case t.config.BindAddrs[0] == zeroZeroZeroZero:
+		switch t.config.BindAddrs[0] {
+		case zeroZeroZeroZero:
 			var err error
 			ip, err = sockaddr.GetPrivateIP()
 			if err != nil {

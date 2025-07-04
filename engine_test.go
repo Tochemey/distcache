@@ -39,8 +39,8 @@ import (
 
 	"github.com/tochemey/distcache/discovery"
 	"github.com/tochemey/distcache/discovery/nats"
+	util "github.com/tochemey/distcache/internal/pause"
 	"github.com/tochemey/distcache/internal/size"
-	"github.com/tochemey/distcache/internal/util"
 	"github.com/tochemey/distcache/log"
 	mocks "github.com/tochemey/distcache/mocks/discovery"
 )

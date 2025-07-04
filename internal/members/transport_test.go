@@ -41,7 +41,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/travisjeffery/go-dynaport"
 
-	"github.com/tochemey/distcache/internal/util"
+	util "github.com/tochemey/distcache/internal/pause"
 )
 
 // nolint
@@ -195,6 +195,7 @@ func TestTCPTransport(t *testing.T) {
 	})
 }
 
+// nolint
 func makeCluster(t *testing.T) (*mockCluster, func()) {
 	cluster := &mockCluster{
 		members:   [2]*memberlist.Memberlist{},
@@ -229,6 +230,7 @@ func makeCluster(t *testing.T) (*mockCluster, func()) {
 	return cluster, cleanupFunc
 }
 
+// nolint
 func newNode(t *testing.T, name string, delegate memberlist.Delegate) *memberlist.Memberlist {
 	// TODO: fix TLS verification
 	conf := autotls.Config{
@@ -305,15 +307,15 @@ func (d *delegate) NodeMeta(limit int) []byte {
 }
 
 func (d *delegate) Messages() [][]byte {
-	d.Mutex.Lock()
-	defer d.Mutex.Unlock()
+	d.Lock()
+	defer d.Unlock()
 	return d.messages
 }
 
 // nolint
 func (d *delegate) NotifyMsg(m []byte) {
-	d.Mutex.Lock()
-	defer d.Mutex.Unlock()
+	d.Lock()
+	defer d.Unlock()
 	d.messages = append(d.messages, m)
 }
 
