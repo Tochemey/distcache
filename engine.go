@@ -262,6 +262,10 @@ func (k *engine) Start(ctx context.Context) (err error) {
 	k.mconfig.AdvertisePort = k.hostNode.DiscoveryPort
 	k.mconfig.LogOutput = newLogWriter(k.config.Logger())
 	k.mconfig.Name = net.JoinHostPort(k.hostNode.BindAddr, strconv.Itoa(k.hostNode.DiscoveryPort))
+	k.mconfig.UDPBufferSize = 10 * 1024 * 1024
+	k.mconfig.ProbeInterval = 5 * time.Second
+	k.mconfig.ProbeTimeout = 2 * time.Second
+	k.mconfig.DisableTcpPings = true
 	k.mconfig.Transport = mtransport
 
 	// no need to check the error because we set the data
