@@ -38,10 +38,16 @@ func TestPatternValidator(t *testing.T) {
 	validator := NewPatternValidator(pattern, expression, nil)
 	assert.NoError(t, validator.Validate())
 
+	// default error path with no custom error provided
+	invalid := NewPatternValidator(pattern, "$omeN@me", nil)
+	err := invalid.Validate()
+	require.Error(t, err)
+	assert.EqualError(t, err, "invalid expression")
+
 	expression = "$omeN@me"
 	customError := errors.New("custom error")
 	validator = NewPatternValidator(pattern, expression, customError)
-	err := validator.Validate()
+	err = validator.Validate()
 	require.Error(t, err)
 	assert.EqualError(t, err, customError.Error())
 }

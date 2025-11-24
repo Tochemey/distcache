@@ -170,10 +170,10 @@ type engine struct {
 	hostNode              *Peer
 	mconfig               *memberlist.Config
 	mlist                 *memberlist.Memberlist
-	started               *atomic.Bool
+	started               atomic.Bool
 	stopEventsListenerSig chan struct{}
-	eventsLock            *sync.Mutex
-	lock                  *sync.Mutex
+	eventsLock            sync.Mutex
+	lock                  sync.Mutex
 	daemon                *groupcache.Daemon
 	groups                *syncmap.SyncMap[string, groupcache.Group]
 }
@@ -212,10 +212,7 @@ func NewEngine(config *Config) (Engine, error) {
 	return &engine{
 		config:                config,
 		hostNode:              hostNode,
-		started:               new(atomic.Bool),
 		stopEventsListenerSig: make(chan struct{}, 1),
-		eventsLock:            new(sync.Mutex),
-		lock:                  new(sync.Mutex),
 		groups:                syncmap.New[string, groupcache.Group](),
 	}, nil
 }
@@ -232,111 +229,96 @@ func NewEngine(config *Config) (Engine, error) {
 //
 // Returns:
 //   - err: An error if the startup process fails, otherwise nil.
-func (k *engine) Start(ctx context.Context) (err error) {
-	k.lock.Lock()
-	k.config.Logger().Infof("DistCache Engine starting on [%s/%s, host=%s]...", runtime.GOOS, runtime.GOARCH, k.hostNode.Address())
-	// create the memberlist configuration
-	mtConfig := members.TransportConfig{
-		BindAddrs:          []string{k.hostNode.BindAddr},
-		BindPort:           k.hostNode.DiscoveryPort,
-		PacketDialTimeout:  5 * time.Second,
-		PacketWriteTimeout: 5 * time.Second,
-		Logger:             k.config.Logger(),
-		DebugEnabled:       false,
-	}
+func (x *engine) Start(ctx context.Context) (err error) {
+	x.lock.Lock()
+	x.config.Logger().Infof("Cache Engine starting on [%s/%s, host=%s]...", runtime.GOOS, runtime.GOARCH, x.hostNode.Address())
 
-	if k.config.TLSInfo() != nil {
-		mtConfig.TLSEnabled = true
-		mtConfig.TLS = k.config.TLSInfo().ServerTLS
+	if err := x.setupMemberlistConfig(); err != nil {
+		x.lock.Unlock()
+		return err
 	}
+	x.lock.Unlock()
 
-	mtransport, err := members.NewTransport(mtConfig)
-	if err != nil {
-		k.config.Logger().Errorf("Failed to create memberlist TCP transport: %v", err)
+	if err := x.bootstrapCluster(); err != nil {
 		return err
 	}
 
-	k.mconfig = memberlist.DefaultLANConfig()
-	k.mconfig.BindAddr = k.hostNode.BindAddr
-	k.mconfig.BindPort = k.hostNode.DiscoveryPort
-	k.mconfig.AdvertisePort = k.hostNode.DiscoveryPort
-	k.mconfig.LogOutput = newLogWriter(k.config.Logger())
-	k.mconfig.Name = net.JoinHostPort(k.hostNode.BindAddr, strconv.Itoa(k.hostNode.DiscoveryPort))
-	k.mconfig.UDPBufferSize = 10 * 1024 * 1024
-	k.mconfig.ProbeInterval = 5 * time.Second
-	k.mconfig.ProbeTimeout = 2 * time.Second
-	k.mconfig.DisableTcpPings = true
-	k.mconfig.Transport = mtransport
+	peers, _ := x.peers()
 
-	// no need to check the error because we set the data
-	meta, _ := json.Marshal(k.hostNode)
-
-	k.mconfig.Delegate = newDelegate(meta)
-	provider := k.config.DiscoveryProvider()
-	k.lock.Unlock()
-
-	// start process
-	if err := errorschain.
-		New(errorschain.ReturnFirst()).
-		AddErrorFn(func() error { return provider.Initialize() }).
-		AddErrorFn(func() error { return provider.Register() }).
-		AddErrorFn(func() error { return k.joinCluster(ctx) }).
-		Error(); err != nil {
-		return err
-	}
-
-	// get the list of peers should not fail
-	peers, _ := k.peers()
-
-	k.lock.Lock()
-	// start the daemon
-	hashFn := func(data []byte) uint64 {
-		return k.config.Hasher().HashCode(data)
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, k.config.BootstrapTimeout())
+	x.lock.Lock()
+	ctx, cancel := context.WithTimeout(ctx, x.config.BootstrapTimeout())
 	defer cancel()
 
-	scheme := "http"
+	if err := x.startDaemon(ctx); err != nil {
+		x.lock.Unlock()
+		return err
+	}
+
+	if err := x.applyPeers(ctx, peers); err != nil {
+		x.lock.Unlock()
+		return err
+	}
+
+	if err := x.createGroups(); err != nil {
+		x.lock.Unlock()
+		return err
+	}
+
+	eventsCh := x.configureEventDelegate()
+	x.started.Store(true)
+	x.lock.Unlock()
+
+	go x.eventsListener(eventsCh)
+
+	x.config.Logger().Infof("Cache engine started: host=%s.", x.hostNode.Address())
+	return nil
+}
+
+func (x *engine) startDaemon(ctx context.Context) error {
+	hashFn := func(data []byte) uint64 {
+		return x.config.Hasher().HashCode(data)
+	}
+
 	client := http.DefaultClient
-	if k.config.TLSInfo() != nil {
+	scheme := "http"
+	if x.config.TLSInfo() != nil {
 		scheme = "https"
 		client = &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: k.config.TLSInfo().ClientTLS,
+				TLSClientConfig: x.config.TLSInfo().ClientTLS,
 			},
 		}
 	}
 
-	// Explicitly instantiate and use the HTTP transport
 	transportOpts := transport.HttpTransportOptions{
 		Client: client,
 		Scheme: scheme,
-		Logger: newGLogger(k.config.Logger()),
+		Logger: newCacheLog(x.config.Logger()),
 	}
 
-	if k.config.TLSInfo() != nil {
-		transportOpts.TLSConfig = k.config.TLSInfo().ServerTLS
+	if x.config.TLSInfo() != nil {
+		transportOpts.TLSConfig = x.config.TLSInfo().ServerTLS
 	}
 
-	daemon, err := groupcache.ListenAndServe(ctx, k.hostNode.Address(), groupcache.Options{
+	daemon, err := groupcache.ListenAndServe(ctx, x.hostNode.Address(), groupcache.Options{
 		HashFn:    hashFn,
-		Replicas:  k.config.ReplicaCount(),
-		Logger:    newGLogger(k.config.Logger()),
+		Replicas:  x.config.ReplicaCount(),
+		Logger:    newCacheLog(x.config.Logger()),
 		Transport: transport.NewHttpTransport(transportOpts),
 	})
-
 	if err != nil {
-		k.lock.Unlock()
 		return fmt.Errorf("failed to start engine daemon: %w", err)
 	}
-	k.daemon = daemon
 
-	// set the peers
+	x.daemon = daemon
+	return nil
+}
+
+func (x *engine) applyPeers(ctx context.Context, peers []*Peer) error {
 	peerInfos := goset.NewSet[peer.Info]()
 	peerInfos.Add(peer.Info{
-		Address: k.hostNode.Address(),
-		IsSelf:  k.hostNode.IsSelf,
+		Address: x.hostNode.Address(),
+		IsSelf:  x.hostNode.IsSelf,
 	})
 
 	for _, xpeer := range peers {
@@ -347,15 +329,17 @@ func (k *engine) Start(ctx context.Context) (err error) {
 		})
 	}
 
-	if err := k.daemon.SetPeers(ctx, peerInfos.ToSlice()); err != nil {
-		k.lock.Unlock()
+	if err := x.daemon.SetPeers(ctx, peerInfos.ToSlice()); err != nil {
 		return fmt.Errorf("failed to set peers: %w", err)
 	}
 
-	// set the groups given the keySpaces
-	keySpaces := k.config.KeySpaces()
+	return nil
+}
+
+func (x *engine) createGroups() error {
+	keySpaces := x.config.KeySpaces()
 	for _, keySpace := range keySpaces {
-		group, err := k.daemon.NewGroup(keySpace.Name(), keySpace.MaxBytes(), groupcache.GetterFunc(
+		group, err := x.daemon.NewGroup(keySpace.Name(), keySpace.MaxBytes(), groupcache.GetterFunc(
 			func(ctx context.Context, id string, dest transport.Sink) error {
 				bytea, err := keySpace.DataSource().Fetch(ctx, id)
 				if err != nil {
@@ -366,29 +350,72 @@ func (k *engine) Start(ctx context.Context) (err error) {
 			}))
 
 		if err != nil {
-			k.lock.Unlock()
 			return fmt.Errorf("failed to create group: %w", err)
 		}
 
-		// add the group to the groups list
-		k.groups.Set(group.Name(), group)
+		x.groups.Set(group.Name(), group)
 	}
+	return nil
+}
 
-	// create enough buffer to house the cluster events
-	// TODO: revisit this number
+func (x *engine) configureEventDelegate() chan memberlist.NodeEvent {
 	eventsCh := make(chan memberlist.NodeEvent, 256)
-	k.mconfig.Events = &memberlist.ChannelEventDelegate{
+	x.mconfig.Events = &memberlist.ChannelEventDelegate{
 		Ch: eventsCh,
 	}
+	return eventsCh
+}
 
-	k.started.Store(true)
-	k.lock.Unlock()
+func (x *engine) setupMemberlistConfig() error {
+	mtConfig := members.TransportConfig{
+		BindAddrs:          []string{x.hostNode.BindAddr},
+		BindPort:           x.hostNode.DiscoveryPort,
+		PacketDialTimeout:  5 * time.Second,
+		PacketWriteTimeout: 5 * time.Second,
+		Logger:             x.config.Logger(),
+		DebugEnabled:       false,
+	}
 
-	// start listening to events
-	go k.eventsListener(eventsCh)
+	if x.config.TLSInfo() != nil {
+		mtConfig.TLSEnabled = true
+		mtConfig.TLS = x.config.TLSInfo().ServerTLS
+	}
 
-	k.config.Logger().Infof("DistCache engine started: host=%s.", k.hostNode.Address())
+	mtransport, err := members.NewTransport(mtConfig)
+	if err != nil {
+		x.config.Logger().Errorf("failed to create memberlist TCP transport: %v", err)
+		return err
+	}
+
+	meta, _ := json.Marshal(x.hostNode)
+	x.mconfig = x.newMemberlistConfig(mtransport, meta)
 	return nil
+}
+
+func (x *engine) newMemberlistConfig(transport memberlist.Transport, meta []byte) *memberlist.Config {
+	config := memberlist.DefaultLANConfig()
+	config.BindAddr = x.hostNode.BindAddr
+	config.BindPort = x.hostNode.DiscoveryPort
+	config.AdvertisePort = x.hostNode.DiscoveryPort
+	config.LogOutput = newLogWriter(x.config.Logger())
+	config.Name = net.JoinHostPort(x.hostNode.BindAddr, strconv.Itoa(x.hostNode.DiscoveryPort))
+	config.UDPBufferSize = 10 * 1024 * 1024
+	config.ProbeInterval = 5 * time.Second
+	config.ProbeTimeout = 2 * time.Second
+	config.DisableTcpPings = true
+	config.Transport = transport
+	config.Delegate = newDelegate(meta)
+	return config
+}
+
+func (x *engine) bootstrapCluster() error {
+	provider := x.config.DiscoveryProvider()
+	return errorschain.
+		New(errorschain.WithFailFast()).
+		AddRunner(provider.Initialize).
+		AddRunner(provider.Register).
+		AddContextRunner(x.joinCluster).
+		Run()
 }
 
 // Stop gracefully shuts down the distributed cache engine.
@@ -400,32 +427,32 @@ func (k *engine) Start(ctx context.Context) (err error) {
 //
 // Returns:
 //   - error: An error if the shutdown process encounters issues, otherwise nil.
-func (k *engine) Stop(ctx context.Context) error {
-	k.lock.Lock()
-	defer k.lock.Unlock()
+func (x *engine) Stop(ctx context.Context) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
 
-	k.config.Logger().Infof("DistCache engine on host=%s stopping...", k.hostNode.Address())
+	x.config.Logger().Infof("Cache engine on host=%s stopping...", x.hostNode.Address())
 
-	if !k.started.Load() {
+	if !x.started.Load() {
 		return nil
 	}
 
 	// stop the events loop
-	close(k.stopEventsListenerSig)
+	close(x.stopEventsListenerSig)
 
-	provider := k.config.DiscoveryProvider()
+	provider := x.config.DiscoveryProvider()
 	if err := errorschain.
-		New(errorschain.ReturnFirst()).
-		AddErrorFn(func() error { return k.mlist.Leave(k.config.ShutdownTimeout()) }).
-		AddErrorFn(func() error { return provider.Deregister() }).
-		AddErrorFn(func() error { return provider.Close() }).
-		AddErrorFn(func() error { return k.mlist.Shutdown() }).
-		AddErrorFn(func() error { return k.daemon.Shutdown(ctx) }).
-		Error(); err != nil {
+		New(errorschain.WithFailFast()).
+		AddRunner(func() error { return x.mlist.Leave(x.config.ShutdownTimeout()) }).
+		AddRunner(provider.Deregister).
+		AddRunner(provider.Close).
+		AddRunner(x.mlist.Shutdown).
+		AddContextRunner(x.daemon.Shutdown).
+		Run(); err != nil {
 		return err
 	}
 
-	k.config.Logger().Infof("DistCache engine on host=%s stopped.", k.hostNode.Address())
+	x.config.Logger().Infof("Cache engine on host=%s stopped.", x.hostNode.Address())
 	return nil
 }
 
@@ -438,16 +465,16 @@ func (k *engine) Stop(ctx context.Context) error {
 //     If Expiry is set to the zero value (time.Time{}), the entry does not expire.
 //
 // Returns an error if the operation fails.
-func (k *engine) Put(ctx context.Context, keyspace string, entry *Entry) error {
-	k.lock.Lock()
-	defer k.lock.Unlock()
+func (x *engine) Put(ctx context.Context, keyspace string, entry *Entry) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
 
-	group, ok := k.groups.Get(keyspace)
+	group, ok := x.groups.Get(keyspace)
 	if !ok {
 		return ErrKeySpaceNotFound
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, k.config.WriteTimeout())
+	ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
 	defer cancel()
 
 	return group.Set(ctx, entry.Key, entry.Value, entry.Expiry, true)
@@ -461,17 +488,17 @@ func (k *engine) Put(ctx context.Context, keyspace string, entry *Entry) error {
 //   - kvs: A slice of key/value pairs to store.
 //
 // Returns an error if the operation fails.
-func (k *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry) error {
-	k.lock.Lock()
-	defer k.lock.Unlock()
+func (x *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
 
-	group, ok := k.groups.Get(keyspace)
+	group, ok := x.groups.Get(keyspace)
 	if !ok {
 		return ErrKeySpaceNotFound
 	}
 
 	for _, entry := range entries {
-		ctx, cancel := context.WithTimeout(ctx, k.config.WriteTimeout())
+		ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
 		if err := group.Set(ctx, entry.Key, entry.Value, entry.Expiry, true); err != nil {
 			cancel()
 			return err
@@ -490,16 +517,16 @@ func (k *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry)
 //   - key: The key identifying the desired key/value pair.
 //
 // Returns the key/value pair if found, or an error if the operation fails or the key does not exist.
-func (k *engine) Get(ctx context.Context, keyspace string, key string) (*KV, error) {
-	k.lock.Lock()
-	defer k.lock.Unlock()
+func (x *engine) Get(ctx context.Context, keyspace string, key string) (*KV, error) {
+	x.lock.Lock()
+	defer x.lock.Unlock()
 
-	group, ok := k.groups.Get(keyspace)
+	group, ok := x.groups.Get(keyspace)
 	if !ok {
 		return nil, ErrKeySpaceNotFound
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, k.config.ReadTimeout())
+	ctx, cancel := context.WithTimeout(ctx, x.config.ReadTimeout())
 	defer cancel()
 
 	var value []byte
@@ -521,16 +548,16 @@ func (k *engine) Get(ctx context.Context, keyspace string, key string) (*KV, err
 //   - key: The key identifying the key/value pair to be deleted.
 //
 // Returns an error if the operation fails.
-func (k *engine) Delete(ctx context.Context, keyspace string, key string) error {
-	k.lock.Lock()
-	defer k.lock.Unlock()
+func (x *engine) Delete(ctx context.Context, keyspace string, key string) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
 
-	group, ok := k.groups.Get(keyspace)
+	group, ok := x.groups.Get(keyspace)
 	if !ok {
 		return ErrKeySpaceNotFound
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, k.config.WriteTimeout())
+	ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
 	defer cancel()
 
 	return group.Remove(ctx, key)
@@ -544,17 +571,17 @@ func (k *engine) Delete(ctx context.Context, keyspace string, key string) error 
 //   - keys: A slice of keys identifying the key/value pairs to be deleted.
 //
 // Returns an error if the operation fails.
-func (k *engine) DeleteMany(ctx context.Context, keyspace string, keys []string) error {
-	k.lock.Lock()
-	defer k.lock.Unlock()
+func (x *engine) DeleteMany(ctx context.Context, keyspace string, keys []string) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
 
-	group, ok := k.groups.Get(keyspace)
+	group, ok := x.groups.Get(keyspace)
 	if !ok {
 		return ErrKeySpaceNotFound
 	}
 
 	for _, key := range keys {
-		ctx, cancel := context.WithTimeout(ctx, k.config.WriteTimeout())
+		ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
 		if err := group.Remove(ctx, key); err != nil {
 			cancel()
 			return err
@@ -567,10 +594,10 @@ func (k *engine) DeleteMany(ctx context.Context, keyspace string, keys []string)
 // KeySpaces returns the list of available KeySpaces from the cache.
 //
 // Returns an empty list if there are no keyspaces
-func (k *engine) KeySpaces() []string {
-	k.lock.Lock()
-	defer k.lock.Unlock()
-	return k.groups.Keys()
+func (x *engine) KeySpaces() []string {
+	x.lock.Lock()
+	defer x.lock.Unlock()
+	return x.groups.Keys()
 }
 
 // DeleteKeySpace delete a given keySpace from the cache.
@@ -580,20 +607,20 @@ func (k *engine) KeySpaces() []string {
 //   - keyspace: The keyspace from which to delete the key/value pairs.
 //
 // Returns an error if the operation fails.
-func (k *engine) DeleteKeySpace(ctx context.Context, keyspace string) error {
-	k.lock.Lock()
-	defer k.lock.Unlock()
+func (x *engine) DeleteKeySpace(ctx context.Context, keyspace string) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
 
-	group, ok := k.groups.Get(keyspace)
+	group, ok := x.groups.Get(keyspace)
 	if !ok {
 		return ErrKeySpaceNotFound
 	}
 
-	_, cancel := context.WithTimeout(ctx, k.config.WriteTimeout())
+	_, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
 	defer cancel()
 
-	k.daemon.RemoveGroup(group.Name())
-	k.groups.Delete(keyspace)
+	x.daemon.RemoveGroup(group.Name())
+	x.groups.Delete(keyspace)
 	return nil
 }
 
@@ -604,27 +631,27 @@ func (k *engine) DeleteKeySpace(ctx context.Context, keyspace string) error {
 //   - keyspaces: A slice of keyspaces to be deleted.
 //
 // Returns an error if the operation fails.
-func (k *engine) DeleteKeyspaces(ctx context.Context, keyspaces []string) error {
-	k.lock.Lock()
-	defer k.lock.Unlock()
+func (x *engine) DeleteKeyspaces(ctx context.Context, keyspaces []string) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
 
-	_, cancel := context.WithTimeout(ctx, k.config.WriteTimeout())
+	_, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
 	defer cancel()
 
 	for _, keyspace := range keyspaces {
-		if group, ok := k.groups.Get(keyspace); ok {
-			k.daemon.RemoveGroup(group.Name())
-			k.groups.Delete(keyspace)
+		if group, ok := x.groups.Get(keyspace); ok {
+			x.daemon.RemoveGroup(group.Name())
+			x.groups.Delete(keyspace)
 		}
 	}
 	return nil
 }
 
 // peers returns a channel containing the list of peers at a given time
-func (k *engine) peers() ([]*Peer, error) {
-	k.lock.Lock()
-	members := k.mlist.Members()
-	k.lock.Unlock()
+func (x *engine) peers() ([]*Peer, error) {
+	x.lock.Lock()
+	members := x.mlist.Members()
+	x.lock.Unlock()
 	peers := make([]*Peer, 0, len(members))
 	for _, member := range members {
 		peer, err := fromBytes(member.Meta)
@@ -633,7 +660,7 @@ func (k *engine) peers() ([]*Peer, error) {
 		}
 
 		// exclude the host node from the list of found peers
-		if peer != nil && peer.Address() != k.hostNode.Address() {
+		if peer != nil && peer.Address() != x.hostNode.Address() {
 			peers = append(peers, peer)
 		}
 	}
@@ -641,31 +668,31 @@ func (k *engine) peers() ([]*Peer, error) {
 }
 
 // eventsListener listens to cluster events
-func (k *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
+func (x *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
 	for {
 		select {
-		case <-k.stopEventsListenerSig:
+		case <-x.stopEventsListenerSig:
 			// finish listening to cluster events
 			return
 		case event := <-eventsChan:
 			node, err := fromBytes(event.Node.Meta)
 			if err != nil {
-				k.config.Logger().Errorf("DistCache on host=%s failed to decode event: %v", err)
+				x.config.Logger().Errorf("Cache on host=%s failed to decode event: %v", err)
 				continue
 			}
 
 			// skip self on cluster event
-			if node.Address() == k.hostNode.Address() {
-				k.config.Logger().Warnf("DistCache on host=%s is already in use", node.Address())
+			if node.Address() == x.hostNode.Address() {
+				x.config.Logger().Warnf("Cache on host=%s is already in use", node.Address())
 				continue
 			}
 
 			ctx := context.Background()
 			// we need to add the new peers
-			currentPeers, _ := k.peers()
+			currentPeers, _ := x.peers()
 			peersSet := goset.NewSet[peer.Info]()
 			peersSet.Add(peer.Info{
-				Address: k.hostNode.Address(),
+				Address: x.hostNode.Address(),
 				IsSelf:  true,
 			})
 
@@ -678,31 +705,31 @@ func (k *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
 
 			switch event.Event {
 			case memberlist.NodeJoin:
-				k.config.Logger().Infof("DistCache on host=%s has noticed node=%s has joined the cluster", k.hostNode.Address(), node.Address())
+				x.config.Logger().Infof("Cache on host=%s has noticed node=%s has joined the cluster", x.hostNode.Address(), node.Address())
 
 				// add the joined node to the peers list
 				// and set it to the daemon
-				k.eventsLock.Lock()
+				x.eventsLock.Lock()
 				peersSet.Add(peer.Info{
 					Address: node.Address(),
 					IsSelf:  node.IsSelf,
 				})
 
-				_ = k.daemon.SetPeers(ctx, peersSet.ToSlice())
-				k.eventsLock.Unlock()
+				_ = x.daemon.SetPeers(ctx, peersSet.ToSlice())
+				x.eventsLock.Unlock()
 
 			case memberlist.NodeLeave:
-				k.config.Logger().Infof("DistCache on host=%s has noticed node=%s has left the cluster", k.hostNode.Address(), node.Address())
+				x.config.Logger().Infof("Cache on host=%s has noticed node=%s has left the cluster", x.hostNode.Address(), node.Address())
 
 				// remove the left node from the peers list
 				// and set it to the daemon
-				k.eventsLock.Lock()
+				x.eventsLock.Lock()
 				peersSet.Remove(peer.Info{
 					Address: node.Address(),
 					IsSelf:  node.IsSelf,
 				})
-				_ = k.daemon.SetPeers(ctx, peersSet.ToSlice())
-				k.eventsLock.Unlock()
+				_ = x.daemon.SetPeers(ctx, peersSet.ToSlice())
+				x.eventsLock.Unlock()
 
 			case memberlist.NodeUpdate:
 				// TODO: need to handle that later
@@ -713,20 +740,20 @@ func (k *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
 }
 
 // joinCluster attempts to join an existing cluster if peers are provided
-func (k *engine) joinCluster(ctx context.Context) error {
+func (x *engine) joinCluster(ctx context.Context) error {
 	var err error
-	k.mlist, err = memberlist.Create(k.mconfig)
+	x.mlist, err = memberlist.Create(x.mconfig)
 	if err != nil {
 		return err
 	}
 
-	joinTimeout := computeTimeout(k.config.MaxJoinAttempts(), k.config.JoinRetryInterval())
+	joinTimeout := computeTimeout(x.config.MaxJoinAttempts(), x.config.JoinRetryInterval())
 	ctx, cancel := context.WithTimeout(ctx, joinTimeout)
 
 	var peers []string
-	retrier := retry.NewRetrier(k.config.MaxJoinAttempts(), k.config.JoinRetryInterval(), k.config.JoinRetryInterval())
+	retrier := retry.NewRetrier(x.config.MaxJoinAttempts(), x.config.JoinRetryInterval(), x.config.JoinRetryInterval())
 	if err := retrier.RunContext(ctx, func(_ context.Context) error {
-		peers, err = k.config.DiscoveryProvider().DiscoverPeers()
+		peers, err = x.config.DiscoveryProvider().DiscoverPeers()
 		if err != nil {
 			return err
 		}
@@ -738,7 +765,7 @@ func (k *engine) joinCluster(ctx context.Context) error {
 
 	if len(peers) > 0 {
 		// check whether the cluster quorum is met to operate
-		if k.config.MinimumPeersQuorum() > len(peers) {
+		if x.config.MinimumPeersQuorum() > len(peers) {
 			cancel()
 			return ErrClusterQuorum
 		}
@@ -746,9 +773,9 @@ func (k *engine) joinCluster(ctx context.Context) error {
 
 		// attempt to join
 		ctx, cancel = context.WithTimeout(ctx, joinTimeout)
-		joinRetrier := retry.NewRetrier(k.config.MaxJoinAttempts(), k.config.JoinRetryInterval(), k.config.JoinRetryInterval())
+		joinRetrier := retry.NewRetrier(x.config.MaxJoinAttempts(), x.config.JoinRetryInterval(), x.config.JoinRetryInterval())
 		if err := joinRetrier.RunContext(ctx, func(_ context.Context) error {
-			if _, err := k.mlist.Join(peers); err != nil {
+			if _, err := x.mlist.Join(peers); err != nil {
 				return err
 			}
 			return nil
@@ -757,7 +784,7 @@ func (k *engine) joinCluster(ctx context.Context) error {
 			return err
 		}
 
-		k.config.Logger().Infof("DistCache on host=%s joined cluster of [%s]", k.hostNode.Address(), strings.Join(peers, ","))
+		x.config.Logger().Infof("Cache on host=%s joined cluster of [%s]", x.hostNode.Address(), strings.Join(peers, ","))
 	}
 
 	cancel()
