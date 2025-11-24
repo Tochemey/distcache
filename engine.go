@@ -169,16 +169,33 @@ type engine struct {
 	config                *Config
 	hostNode              *Peer
 	mconfig               *memberlist.Config
-	mlist                 *memberlist.Memberlist
+	mlist                 memberlistAPI
 	started               atomic.Bool
 	stopEventsListenerSig chan struct{}
 	eventsLock            sync.Mutex
 	lock                  sync.Mutex
-	daemon                *groupcache.Daemon
-	groups                *syncmap.SyncMap[string, groupcache.Group]
+	daemon                daemonAPI
+	groups                *syncmap.SyncMap[string, transport.Group]
+	newTransportFunc      func(members.TransportConfig) (memberlist.Transport, error)
+	createMemberlistFunc  func(*memberlist.Config) (memberlistAPI, error)
+	listenAndServeFunc    func(context.Context, string, groupcache.Options) (daemonAPI, error)
 }
 
 var _ Engine = (*engine)(nil)
+
+type memberlistAPI interface {
+	Members() []*memberlist.Node
+	Join(existing []string) (int, error)
+	Leave(timeout time.Duration) error
+	Shutdown() error
+}
+
+type daemonAPI interface {
+	SetPeers(context.Context, []peer.Info) error
+	NewGroup(string, int64, groupcache.Getter) (transport.Group, error)
+	RemoveGroup(name string)
+	Shutdown(ctx context.Context) error
+}
 
 // NewEngine creates and initializes a new distributed cache engine based on the provided configuration.
 //
@@ -213,7 +230,16 @@ func NewEngine(config *Config) (Engine, error) {
 		config:                config,
 		hostNode:              hostNode,
 		stopEventsListenerSig: make(chan struct{}, 1),
-		groups:                syncmap.New[string, groupcache.Group](),
+		groups:                syncmap.New[string, transport.Group](),
+		newTransportFunc: func(cfg members.TransportConfig) (memberlist.Transport, error) {
+			return members.NewTransport(cfg)
+		},
+		createMemberlistFunc: func(cfg *memberlist.Config) (memberlistAPI, error) {
+			return memberlist.Create(cfg)
+		},
+		listenAndServeFunc: func(ctx context.Context, address string, opts groupcache.Options) (daemonAPI, error) {
+			return groupcache.ListenAndServe(ctx, address, opts)
+		},
 	}, nil
 }
 
@@ -300,7 +326,7 @@ func (x *engine) startDaemon(ctx context.Context) error {
 		transportOpts.TLSConfig = x.config.TLSInfo().ServerTLS
 	}
 
-	daemon, err := groupcache.ListenAndServe(ctx, x.hostNode.Address(), groupcache.Options{
+	daemon, err := x.listenAndServeFunc(ctx, x.hostNode.Address(), groupcache.Options{
 		HashFn:    hashFn,
 		Replicas:  x.config.ReplicaCount(),
 		Logger:    newCacheLog(x.config.Logger()),
@@ -381,7 +407,7 @@ func (x *engine) setupMemberlistConfig() error {
 		mtConfig.TLS = x.config.TLSInfo().ServerTLS
 	}
 
-	mtransport, err := members.NewTransport(mtConfig)
+	mtransport, err := x.newTransportFunc(mtConfig)
 	if err != nil {
 		x.config.Logger().Errorf("failed to create memberlist TCP transport: %v", err)
 		return err
@@ -732,8 +758,14 @@ func (x *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
 				x.eventsLock.Unlock()
 
 			case memberlist.NodeUpdate:
-				// TODO: need to handle that later
-				continue
+				x.eventsLock.Lock()
+				peersSet.Add(peer.Info{
+					Address: node.Address(),
+					IsSelf:  node.IsSelf,
+				})
+
+				_ = x.daemon.SetPeers(ctx, peersSet.ToSlice())
+				x.eventsLock.Unlock()
 			}
 		}
 	}
@@ -742,7 +774,7 @@ func (x *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
 // joinCluster attempts to join an existing cluster if peers are provided
 func (x *engine) joinCluster(ctx context.Context) error {
 	var err error
-	x.mlist, err = memberlist.Create(x.mconfig)
+	x.mlist, err = x.createMemberlistFunc(x.mconfig)
 	if err != nil {
 		return err
 	}

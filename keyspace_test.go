@@ -34,12 +34,12 @@ type MockKeySpace struct {
 	*sync.RWMutex
 	name       string
 	maxBytes   int64
-	dataSource *MockDataSource
+	dataSource DataSource
 }
 
 var _ KeySpace = (*MockKeySpace)(nil)
 
-func NewMockKeySpace(name string, maxBytes int64, source *MockDataSource) *MockKeySpace {
+func NewMockKeySpace(name string, maxBytes int64, source DataSource) *MockKeySpace {
 	return &MockKeySpace{
 		RWMutex:    &sync.RWMutex{},
 		name:       name,

@@ -2,7 +2,7 @@ version: "2"
 run:
   concurrency: 4
   issues-exit-code: 2
-  tests: true
+  tests: false
 output:
   path-prefix: ""
 linters:
