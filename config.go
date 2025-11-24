@@ -49,7 +49,7 @@ const (
 
 	// DefaultBootstrapTimeout denotes default timeout value to check bootstrapping
 	// status.
-	DefaultBootstrapTimeout = 10 * time.Second
+	DefaultBootstrapTimeout = 30 * time.Second
 
 	// DefaultJoinRetryInterval denotes a time gap between sequential join attempts.
 	DefaultJoinRetryInterval = time.Second
@@ -68,13 +68,13 @@ const (
 
 	// DefaultShutdownTimeout is the default value of maximum amount of time before
 	// shutting down
-	DefaultShutdownTimeout = 5 * time.Second
+	DefaultShutdownTimeout = 30 * time.Second
 
 	// DefaultReadTimeout is the default timeout for reading data from the distributed cache
-	DefaultReadTimeout = 3 * time.Second
+	DefaultReadTimeout = 5 * time.Second
 
 	// DefaultWriteTimeout is default write timeout to write data into the distributed cache
-	DefaultWriteTimeout = 3 * time.Second
+	DefaultWriteTimeout = 5 * time.Second
 
 	// MinimumMemberCountQuorum denotes minimum required count of members to form
 	// a cluster.
@@ -159,6 +159,10 @@ type Config struct {
 
 	// TLS support.
 	tlsInfo *TLSInfo
+
+	// Label is an optional label to identify the distcache node.
+	// This label should be the same for all nodes in the cluster.
+	label string
 }
 
 // enforce compilation error
@@ -193,6 +197,7 @@ func NewConfig(provider discovery.Provider, keySpaces []KeySpace, opts ...Option
 		keepAlivePeriod:    DefaultKeepAlivePeriod,
 		bootstrapTimeout:   DefaultBootstrapTimeout,
 		minimumPeersQuorum: MinimumMemberCountQuorum,
+		label:              "distcache",
 	}
 
 	for _, opt := range opts {
@@ -318,10 +323,18 @@ func (c Config) TLSInfo() *TLSInfo {
 	return c.tlsInfo
 }
 
+// Label returns the distcache node label
+// This label is used to identify the distcache node.
+// This label should be the same for all nodes in the cluster.
+func (c Config) Label() string {
+	return c.label
+}
+
 // Validate validates the distcache configuration
 func (c Config) Validate() error {
 	chain := validation.
 		New(validation.FailFast()).
+		AddValidator(validation.NewEmptyStringValidator("label", c.label)).
 		AddAssertion(c.shutdownTimeout > 0, "shutdownTimeout is invalid").
 		AddAssertion(c.joinRetryInterval > 0, "joinRetryInterval is invalid").
 		AddAssertion(c.maxJoinAttempts > 1, "maxJoinAttempts is invalid").

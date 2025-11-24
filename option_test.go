@@ -118,6 +118,11 @@ func TestOptions(t *testing.T) {
 			option:   WithHasher(hashFn),
 			expected: Config{hasher: hashFn},
 		},
+		{
+			name:     "WithLabel",
+			option:   WithLabel("my-distcache"),
+			expected: Config{label: "my-distcache"},
+		},
 	}
 
 	for _, tc := range testCases {

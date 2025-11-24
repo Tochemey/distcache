@@ -183,6 +183,15 @@ type engine struct {
 
 var _ Engine = (*engine)(nil)
 
+const (
+	defaultHTTPDialTimeout     = 15 * time.Second
+	defaultHTTPClientTimeout   = 30 * time.Second
+	defaultIdleConnTimeout     = 2 * time.Minute
+	defaultTLSHandshakeTimeout = 15 * time.Second
+	defaultMaxIdleConns        = 200
+	defaultMaxIdleConnsPerHost = 50
+)
+
 type memberlistAPI interface {
 	Members() []*memberlist.Node
 	Join(existing []string) (int, error)
@@ -301,36 +310,12 @@ func (x *engine) Start(ctx context.Context) (err error) {
 }
 
 func (x *engine) startDaemon(ctx context.Context) error {
-	hashFn := func(data []byte) uint64 {
-		return x.config.Hasher().HashCode(data)
-	}
-
-	client := http.DefaultClient
-	scheme := "http"
-	if x.config.TLSInfo() != nil {
-		scheme = "https"
-		client = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: x.config.TLSInfo().ClientTLS,
-			},
-		}
-	}
-
-	transportOpts := transport.HttpTransportOptions{
-		Client: client,
-		Scheme: scheme,
-		Logger: newCacheLog(x.config.Logger()),
-	}
-
-	if x.config.TLSInfo() != nil {
-		transportOpts.TLSConfig = x.config.TLSInfo().ServerTLS
-	}
-
+	httpOpts := x.httpTransportOptions()
 	daemon, err := x.listenAndServeFunc(ctx, x.hostNode.Address(), groupcache.Options{
-		HashFn:    hashFn,
+		HashFn:    x.config.Hasher().HashCode,
 		Replicas:  x.config.ReplicaCount(),
 		Logger:    newCacheLog(x.config.Logger()),
-		Transport: transport.NewHttpTransport(transportOpts),
+		Transport: transport.NewHttpTransport(httpOpts),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start engine daemon: %w", err)
@@ -338,6 +323,50 @@ func (x *engine) startDaemon(ctx context.Context) error {
 
 	x.daemon = daemon
 	return nil
+}
+
+func (x *engine) httpTransportOptions() transport.HttpTransportOptions {
+	tlsInfo := x.config.TLSInfo()
+	scheme := "http"
+	if tlsInfo != nil {
+		scheme = "https"
+	}
+
+	httpTransport := x.newHTTPTransport(tlsInfo)
+	opts := transport.HttpTransportOptions{
+		Client: &http.Client{
+			Timeout:   defaultHTTPClientTimeout,
+			Transport: httpTransport,
+		},
+		Scheme: scheme,
+		Logger: newCacheLog(x.config.Logger()),
+	}
+
+	if tlsInfo != nil {
+		opts.TLSConfig = tlsInfo.ServerTLS
+	}
+
+	return opts
+}
+
+func (x *engine) newHTTPTransport(tlsInfo *TLSInfo) *http.Transport {
+	httpTransport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   defaultHTTPDialTimeout,
+			KeepAlive: x.config.KeepAlivePeriod(),
+		}).DialContext,
+		MaxIdleConns:        defaultMaxIdleConns,
+		MaxIdleConnsPerHost: defaultMaxIdleConnsPerHost,
+		IdleConnTimeout:     defaultIdleConnTimeout,
+	}
+
+	if tlsInfo != nil {
+		httpTransport.TLSClientConfig = tlsInfo.ClientTLS
+		httpTransport.TLSHandshakeTimeout = defaultTLSHandshakeTimeout
+	}
+
+	return httpTransport
 }
 
 func (x *engine) applyPeers(ctx context.Context, peers []*Peer) error {
@@ -431,6 +460,12 @@ func (x *engine) newMemberlistConfig(transport memberlist.Transport, meta []byte
 	config.DisableTcpPings = true
 	config.Transport = transport
 	config.Delegate = newDelegate(meta)
+	// Kubernetes-specific filtering is necessary because dynamic IP assignment can cause pods in different namespaces to share the same IP address over time.
+	// This can lead to unintended cross-namespace communication within the memberlist ring.
+	// To prevent this, all nodes are assigned the same label corresponding to the actor system name, enabling proper filtering.
+	// As a result, even if a pod receives a gossip message from a reused IP now belonging to a different namespace,
+	// the message will be rejected if it lacks the expected label identifying it as part of the correct ring.
+	config.Label = fmt.Sprintf("prefix-%s", x.config.Label())
 	return config
 }
 
@@ -780,11 +815,11 @@ func (x *engine) joinCluster(ctx context.Context) error {
 	}
 
 	joinTimeout := computeTimeout(x.config.MaxJoinAttempts(), x.config.JoinRetryInterval())
-	ctx, cancel := context.WithTimeout(ctx, joinTimeout)
+	discoverCtx, cancel := context.WithTimeout(ctx, joinTimeout)
 
 	var peers []string
 	retrier := retry.NewRetrier(x.config.MaxJoinAttempts(), x.config.JoinRetryInterval(), x.config.JoinRetryInterval())
-	if err := retrier.RunContext(ctx, func(_ context.Context) error {
+	if err := retrier.RunContext(discoverCtx, func(_ context.Context) error {
 		peers, err = x.config.DiscoveryProvider().DiscoverPeers()
 		if err != nil {
 			return err
@@ -794,32 +829,31 @@ func (x *engine) joinCluster(ctx context.Context) error {
 		cancel()
 		return err
 	}
+	cancel()
 
 	if len(peers) > 0 {
 		// check whether the cluster quorum is met to operate
 		if x.config.MinimumPeersQuorum() > len(peers) {
-			cancel()
 			return ErrClusterQuorum
 		}
-		cancel()
 
 		// attempt to join
-		ctx, cancel = context.WithTimeout(ctx, joinTimeout)
+		joinCtx, joinCancel := context.WithTimeout(ctx, joinTimeout)
 		joinRetrier := retry.NewRetrier(x.config.MaxJoinAttempts(), x.config.JoinRetryInterval(), x.config.JoinRetryInterval())
-		if err := joinRetrier.RunContext(ctx, func(_ context.Context) error {
+		if err := joinRetrier.RunContext(joinCtx, func(_ context.Context) error {
 			if _, err := x.mlist.Join(peers); err != nil {
 				return err
 			}
 			return nil
 		}); err != nil {
-			cancel()
+			joinCancel()
 			return err
 		}
+		joinCancel()
 
 		x.config.Logger().Infof("Cache on host=%s joined cluster of [%s]", x.hostNode.Address(), strings.Join(peers, ","))
 	}
 
-	cancel()
 	return nil
 }
 

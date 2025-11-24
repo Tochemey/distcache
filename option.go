@@ -338,3 +338,20 @@ func WithHasher(hashFn hash.Hasher) Option {
 		config.hasher = hashFn
 	})
 }
+
+// WithLabel configures the distcache node with a specific label.
+//
+// This label is used to identify the distcache node.
+// It is required that all nodes in the cluster use the same label
+// to ensure proper identification and grouping.
+//
+// Parameters:
+//   - label: A string representing the label for the distcache node.
+//
+// Returns:
+//   - Option: A functional option that applies the specified label to the distcache node.
+func WithLabel(label string) Option {
+	return OptionFunc(func(config *Config) {
+		config.label = label
+	})
+}
