@@ -5,15 +5,15 @@
 [![GitHub go.mod Go version](https://badges.chse.dev/github/go-mod/go-version/Tochemey/distcache)](https://go.dev/doc/install)
 [![Go Reference](https://pkg.go.dev/badge/github.com/tochemey/distcache.svg)](https://pkg.go.dev/github.com/tochemey/distcache)
 
-`DistCache` is a Distributed Read-Through Cache Engine built in [Go](https://go.dev/).
+DistCache is a Distributed Read-Through Cache Engine built in [Go](https://go.dev/).
 
 A Distributed Read-Through Cache is a caching strategy where cache sits between the application and the data source,
 automatically fetching and storing data when requested. If data is not in the cache (cache miss), it retrieves it from the primary data source (e.g., database, API), stores it
 in the cache, and serves it to the client. This approach reduces direct database queries, improves response times, and enhances system scalability.
 
-`DistCache` was built to be scalable and high available. With `DistCache`, you can instantly create a fast, scalable, distributed system across a cluster of computers.
+DistCache was built to be scalable and high available. With DistCache, you can instantly create a fast, scalable, distributed system across a cluster of computers.
 
-`DistCache` caching engine is powered by the battle-tested [group cache](https://github.com/groupcache/groupcache-go).
+DistCache caching engine is powered by the battle-tested [group cache](https://github.com/groupcache/groupcache-go).
 
 ## 👋 Table Of Content
 
