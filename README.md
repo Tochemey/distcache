@@ -24,10 +24,10 @@ The caching engine is powered by the battle‑tested [groupcache-go](https://git
 ## 👋 Table of Contents
 
 - [Features](#-features)
+- [Installation](#-installation)
 - [Engine](#-engine)
 - [How It Works](#-how-it-works)
 - [Use Cases](#-use-cases)
-- [Installation](#-installation)
 - [Get Started](#-get-started)
   - [DataSource](#datasource)
   - [KeySpace](#keyspace)
@@ -47,8 +47,14 @@ The caching engine is powered by the battle‑tested [groupcache-go](https://git
   - [Static](./discovery/static/README.md) – fixed list of peers, ideal for tests and demos.
   - [DNS](./discovery/dnssd/README.md) – discover peers via Go’s DNS resolver.
 - **TLS support** – End‑to‑end encrypted communication between nodes. All nodes must share the same root
-  Certificate Authority (CA) for a successful handshake. TLS is enabled via the [`WithTLS`](./config.go) option
+  Certificate Authority (CA) for a successful handshake. TLS is enabled via the [`WithTLS`](./option.go) option
   in the configuration and applies to both client and server sides.
+
+## 💻 Installation
+
+```bash
+go get github.com/tochemey/distcache
+```
 
 ## ⚙️ Engine
 
@@ -89,22 +95,14 @@ simple and predictable.
 - **API response caching** – Cache expensive or frequently called external APIs.
 - **Session and profile caching** – Keep user session or profile data close to your application across nodes.
 
-## 💻 Installation
-
-```bash
-go get github.com/tochemey/distcache
-```
-
 ## 🚀 Get Started
 
 To integrate DistCache, configure a [`Config`](./config.go) and implement **two interfaces** before starting the
 [Engine](./engine.go):
 
-- [`DataSource`](./datasource.go):  
-  Defines how to fetch data on a cache miss. This can be a database, REST API, gRPC service, filesystem, or any
+- [`DataSource`](./datasource.go): Defines how to fetch data on a cache miss. This can be a database, REST API, gRPC service, filesystem, or any
   other backend.
-- [`KeySpace`](./keyspace.go):  
-  Defines a logical namespace for grouping key/value pairs. It controls metadata such as:
+- [`KeySpace`](./keyspace.go): Defines a logical namespace for grouping key/value pairs. It controls metadata such as:
   - Keyspace name
   - Storage constraints
   - Expiration and eviction behavior
