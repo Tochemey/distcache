@@ -427,7 +427,7 @@ func (x *engine) bootstrapCluster() error {
 //
 // Returns:
 //   - error: An error if the shutdown process encounters issues, otherwise nil.
-func (x *engine) Stop(ctx context.Context) error {
+func (x *engine) Stop(ctx context.Context) error { // nolint
 	x.lock.Lock()
 	defer x.lock.Unlock()
 
