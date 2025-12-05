@@ -56,6 +56,7 @@ import (
 	"github.com/tochemey/distcache/log"
 	mockDiscovery "github.com/tochemey/distcache/mocks/discovery"
 	mocks "github.com/tochemey/distcache/mocks/discovery"
+	"github.com/tochemey/distcache/otel"
 )
 
 func TestEngineErrorsPath(t *testing.T) {
@@ -299,10 +300,15 @@ func TestEngine(t *testing.T) {
 			NewMockKeySpace(keySpace, size.MB, dataSource),
 		}
 
+		traceConfig := otel.NewTracerConfig()
+		metricConfig := otel.NewMetricConfig()
+
 		config := NewConfig(provider, keySpaces,
 			WithBindAddr(host),
 			WithLogger(log.DiscardLogger),
 			WithDiscoveryPort(discoveryPort),
+			WithTracing(traceConfig),
+			WithMetrics(metricConfig),
 			WithBindPort(bindPort))
 
 		engine, err := NewEngine(config)

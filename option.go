@@ -29,6 +29,7 @@ import (
 
 	"github.com/tochemey/distcache/hash"
 	"github.com/tochemey/distcache/log"
+	"github.com/tochemey/distcache/otel"
 )
 
 // Option defines a configuration option that can be applied to a Config.
@@ -353,5 +354,47 @@ func WithHasher(hashFn hash.Hasher) Option {
 func WithLabel(label string) Option {
 	return OptionFunc(func(config *Config) {
 		config.label = label
+	})
+}
+
+// WithMetrics configures distcache to use the provided OpenTelemetry metric settings.
+//
+// Use this option to supply a pre-built otel.MetricConfig (e.g., a custom MeterProvider
+// or instrumentation name) for creating meters and instruments.
+//
+// Parameters:
+//   - metricsConfig: A pointer to otel.MetricConfig that defines the MeterProvider and
+//     instrumentation name to be used.
+//
+// Returns:
+//   - Option: A functional option that applies the metric configuration to distcache.
+//
+// Usage:
+//
+//	cfg := NewConfig(WithMetrics(otel.NewMetricConfig()))
+func WithMetrics(metricsConfig *otel.MetricConfig) Option {
+	return OptionFunc(func(config *Config) {
+		config.metricConfig = metricsConfig
+	})
+}
+
+// WithTracing configures distcache to use the provided OpenTelemetry tracing settings.
+//
+// Use this option to supply a pre-built otel.TracerConfig (e.g., a custom TracerProvider
+// or instrumentation name) for creating tracers and spans.
+//
+// Parameters:
+//   - traceConfig: A pointer to otel.TracerConfig that defines the TracerProvider and
+//     instrumentation name to be used.
+//
+// Returns:
+//   - Option: A functional option that applies the tracing configuration to distcache.
+//
+// Usage:
+//
+//	cfg := NewConfig(WithTracing(otel.NewTracerConfig()))
+func WithTracing(traceConfig *otel.TracerConfig) Option {
+	return OptionFunc(func(config *Config) {
+		config.traceConfig = traceConfig
 	})
 }

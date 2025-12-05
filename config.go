@@ -34,6 +34,7 @@ import (
 	"github.com/tochemey/distcache/hash"
 	"github.com/tochemey/distcache/internal/validation"
 	"github.com/tochemey/distcache/log"
+	"github.com/tochemey/distcache/otel"
 )
 
 const (
@@ -163,6 +164,9 @@ type Config struct {
 	// Label is an optional label to identify the distcache node.
 	// This label should be the same for all nodes in the cluster.
 	label string
+
+	traceConfig  *otel.TracerConfig
+	metricConfig *otel.MetricConfig
 }
 
 // enforce compilation error
@@ -198,6 +202,8 @@ func NewConfig(provider discovery.Provider, keySpaces []KeySpace, opts ...Option
 		bootstrapTimeout:   DefaultBootstrapTimeout,
 		minimumPeersQuorum: MinimumMemberCountQuorum,
 		label:              "distcache",
+		traceConfig:        nil,
+		metricConfig:       nil,
 	}
 
 	for _, opt := range opts {
@@ -328,6 +334,16 @@ func (c Config) TLSInfo() *TLSInfo {
 // This label should be the same for all nodes in the cluster.
 func (c Config) Label() string {
 	return c.label
+}
+
+// TraceConfig returns the trace configuration
+func (c Config) TraceConfig() *otel.TracerConfig {
+	return c.traceConfig
+}
+
+// MetricConfig returns the metric configuration
+func (c Config) MetricConfig() *otel.MetricConfig {
+	return c.metricConfig
 }
 
 // Validate validates the distcache configuration

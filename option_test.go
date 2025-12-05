@@ -33,10 +33,13 @@ import (
 
 	"github.com/tochemey/distcache/hash"
 	"github.com/tochemey/distcache/log"
+	"github.com/tochemey/distcache/otel"
 )
 
 func TestOptions(t *testing.T) {
 	tlsConfig := &tls.Config{InsecureSkipVerify: true} // nolint
+	metricConfig := otel.NewMetricConfig()
+	traceConfig := otel.NewTracerConfig()
 	tlsInfo := &TLSInfo{
 		ClientTLS: tlsConfig,
 		ServerTLS: tlsConfig,
@@ -122,6 +125,16 @@ func TestOptions(t *testing.T) {
 			name:     "WithLabel",
 			option:   WithLabel("my-distcache"),
 			expected: Config{label: "my-distcache"},
+		},
+		{
+			name:     "WithTracing",
+			option:   WithTracing(traceConfig),
+			expected: Config{traceConfig: traceConfig},
+		},
+		{
+			name:     "WithMetrics",
+			option:   WithMetrics(metricConfig),
+			expected: Config{metricConfig: metricConfig},
 		},
 	}
 

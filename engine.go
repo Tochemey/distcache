@@ -311,12 +311,20 @@ func (x *engine) Start(ctx context.Context) (err error) {
 
 func (x *engine) startDaemon(ctx context.Context) error {
 	httpOpts := x.httpTransportOptions()
-	daemon, err := x.listenAndServeFunc(ctx, x.hostNode.Address(), groupcache.Options{
+	daemonOpts := groupcache.Options{
 		HashFn:    x.config.Hasher().HashCode,
 		Replicas:  x.config.ReplicaCount(),
 		Logger:    newCacheLog(x.config.Logger()),
 		Transport: transport.NewHttpTransport(httpOpts),
-	})
+	}
+
+	if x.config.MetricConfig() != nil {
+		daemonOpts.MetricProvider = groupcache.NewMeterProvider(
+			groupcache.WithMeterProvider(x.config.MetricConfig().Provider()),
+		)
+	}
+
+	daemon, err := x.listenAndServeFunc(ctx, x.hostNode.Address(), daemonOpts)
 	if err != nil {
 		return fmt.Errorf("failed to start engine daemon: %w", err)
 	}
@@ -344,6 +352,13 @@ func (x *engine) httpTransportOptions() transport.HttpTransportOptions {
 
 	if tlsInfo != nil {
 		opts.TLSConfig = tlsInfo.ServerTLS
+	}
+
+	if x.config.traceConfig != nil {
+		opts.Tracer = transport.NewTracer(
+			transport.WithTraceProvider(x.config.TraceConfig().TracerProvider()),
+			transport.WithTracerAttributes(x.config.TraceConfig().Attributes()...),
+		)
 	}
 
 	return opts
