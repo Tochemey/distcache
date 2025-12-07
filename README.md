@@ -41,7 +41,7 @@ The caching engine is powered by the battle‑tested [groupcache-go](https://git
 - **Reduced backend load** – Frequent reads are served from the cache instead of the database.
 - **Configurable expiry & eviction** – Support for TTL, LRU, and custom policies.
 - **Automatic node discovery** – Nodes automatically react to cluster topology changes.
-- **Discovery provider API** – Implement custom discovery backends or use the built‑in ones:
+- **Discovery provider** – Implement custom discovery backends or use the built‑in ones:
   - [Kubernetes](./discovery/kubernetes/README.md) – discover peers via the Kubernetes API.
   - [NATS](./discovery/nats/README.md) – discover peers via [NATS](https://github.com/nats-io/nats.go).
   - [Static](./discovery/static/README.md) – fixed list of peers, ideal for tests and demos.
@@ -49,6 +49,8 @@ The caching engine is powered by the battle‑tested [groupcache-go](https://git
 - **TLS support** – End‑to‑end encrypted communication between nodes. All nodes must share the same root
   Certificate Authority (CA) for a successful handshake. TLS is enabled via the [`WithTLS`](./option.go) option
   in the configuration and applies to both client and server sides.
+- **Instrumentation** - Support for metrics and tracing via [OpenTelemetry](https://opentelemetry.io/docs/languages/go/getting-started/). That can be enabled using the
+  [`WithMetrics`](./option.go) and [`WithTracing`](./option.go) options in the configuration.
 
 ## 💻 Installation
 
