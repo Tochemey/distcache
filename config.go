@@ -1,26 +1,24 @@
-/*
- * MIT License
- *
- * Copyright (c) 2025 Arsene Tochemey Gandote
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+// MIT License
+//
+// Copyright (c) 2025-2026 Arsene Tochemey Gandote
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 package distcache
 
@@ -30,11 +28,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/tochemey/distcache/admin"
 	"github.com/tochemey/distcache/discovery"
 	"github.com/tochemey/distcache/hash"
 	"github.com/tochemey/distcache/internal/validation"
 	"github.com/tochemey/distcache/log"
 	"github.com/tochemey/distcache/otel"
+	"github.com/tochemey/distcache/warmup"
 )
 
 const (
@@ -81,6 +81,57 @@ const (
 	// a cluster.
 	MinimumMemberCountQuorum = 1
 )
+
+// KeySpaceConfig defines optional, keyspace-specific behaviors.
+//
+// Zero values mean "inherit the engine defaults" unless otherwise stated.
+type KeySpaceConfig struct {
+	// MaxBytes overrides KeySpace.MaxBytes when greater than zero.
+	MaxBytes int64
+	// DefaultTTL applies when an entry has no explicit expiration.
+	DefaultTTL time.Duration
+	// ReadTimeout overrides the engine ReadTimeout when greater than zero.
+	ReadTimeout time.Duration
+	// WriteTimeout overrides the engine WriteTimeout when greater than zero.
+	WriteTimeout time.Duration
+	// WarmKeys lists keys to prefetch when the cluster topology changes.
+	WarmKeys []string
+	// RateLimit configures per-keyspace rate limiting.
+	// When nil, the engine-level rate limiter is used.
+	RateLimit *RateLimitConfig
+	// CircuitBreaker configures per-keyspace circuit breaking.
+	// When nil, the engine-level circuit breaker is used.
+	CircuitBreaker *CircuitBreakerConfig
+}
+
+// RateLimitConfig defines a token bucket rate limiter configuration.
+//
+// The limiter enforces RequestsPerSecond with a configurable Burst capacity.
+// When WaitTimeout is zero, requests that exceed the rate limit fail fast.
+// When WaitTimeout is greater than zero, Fetch waits up to that duration for
+// a token before returning ErrDataSourceRateLimited.
+type RateLimitConfig struct {
+	// RequestsPerSecond defines the steady-state rate limit.
+	RequestsPerSecond float64
+	// Burst is the maximum burst size allowed by the limiter.
+	Burst int
+	// WaitTimeout bounds how long Fetch waits for a token; zero means fail fast.
+	WaitTimeout time.Duration
+}
+
+// CircuitBreakerConfig defines a consecutive-failure circuit breaker.
+//
+// Algorithm:
+//   - Closed: all requests pass; failures are counted consecutively.
+//   - Open: requests are rejected until ResetTimeout elapses.
+//   - Half-open: exactly one request is allowed to probe recovery.
+//     Success closes the breaker; failure re-opens it.
+type CircuitBreakerConfig struct {
+	// FailureThreshold is the number of consecutive failures before opening.
+	FailureThreshold int
+	// ResetTimeout is how long the breaker stays open before probing.
+	ResetTimeout time.Duration
+}
 
 // Config defines distcache configuration
 type Config struct {
@@ -143,6 +194,9 @@ type Config struct {
 	// KeySpaces defines the various keySpaces used by distcache
 	keySpaces []KeySpace
 
+	// keySpaceConfigs holds optional per-keyspace overrides.
+	keySpaceConfigs map[string]KeySpaceConfig
+
 	// distcache will broadcast a leave message but will not shut down the background
 	// listeners, meaning the node will continue participating in gossip and state
 	// updates.
@@ -167,6 +221,11 @@ type Config struct {
 
 	traceConfig  *otel.TracerConfig
 	metricConfig *otel.MetricConfig
+	adminConfig  *admin.Config
+	warmupConfig *warmup.Config
+
+	// dataSourcePolicy applies to all keyspaces unless overridden.
+	dataSourcePolicy *dataSourceConfig
 }
 
 // enforce compilation error
@@ -204,6 +263,9 @@ func NewConfig(provider discovery.Provider, keySpaces []KeySpace, opts ...Option
 		label:              "distcache",
 		traceConfig:        nil,
 		metricConfig:       nil,
+		adminConfig:        nil,
+		warmupConfig:       nil,
+		dataSourcePolicy:   nil,
 	}
 
 	for _, opt := range opts {
@@ -346,6 +408,16 @@ func (c Config) MetricConfig() *otel.MetricConfig {
 	return c.metricConfig
 }
 
+// AdminConfig returns the admin server configuration.
+func (c Config) AdminConfig() *admin.Config {
+	return c.adminConfig
+}
+
+// WarmupConfig returns the warmup configuration.
+func (c Config) WarmupConfig() *warmup.Config {
+	return c.warmupConfig
+}
+
 // Validate validates the distcache configuration
 func (c Config) Validate() error {
 	chain := validation.
@@ -366,12 +438,78 @@ func (c Config) Validate() error {
 		AddValidator(validation.NewConditionalValidator(c.ifname == "", validation.NewTCPAddressValidator(net.JoinHostPort(c.bindAddr, strconv.Itoa(c.bindPort))))).
 		AddValidator(validation.NewConditionalValidator(c.ifname == "", validation.NewTCPAddressValidator(net.JoinHostPort(c.bindAddr, strconv.Itoa(c.discoveryPort)))))
 
+	seenKeySpaces := make(map[string]struct{})
 	for _, keySpace := range c.keySpaces {
+		if _, exists := seenKeySpaces[keySpace.Name()]; exists {
+			chain = chain.AddAssertion(false, "keySpace.Name must be unique")
+		} else {
+			seenKeySpaces[keySpace.Name()] = struct{}{}
+		}
 		chain = chain.
 			AddValidator(validation.NewEmptyStringValidator(keySpace.Name(), "keySpace.Name")).
 			AddAssertion(keySpace.DataSource() != nil, "keySpace.DataSource is required").
 			AddAssertion(keySpace.MaxBytes() != 0, "keySpace.MaxBytes is required")
 	}
+	for name, cfg := range c.keySpaceConfigs {
+		if _, exists := seenKeySpaces[name]; !exists {
+			chain = chain.AddAssertion(false, "keySpace."+name+" config has no matching keyspace")
+			continue
+		}
+		chain = chain.AddValidator(newKeySpaceConfigValidator(name, cfg))
+	}
 
+	if c.adminConfig != nil {
+		cfg := c.adminConfig.Normalize()
+		chain = chain.
+			AddAssertion(cfg.ListenAddr != "", "adminConfig.listenAddr is required").
+			AddAssertion(cfg.ReadTimeout > 0, "adminConfig.readTimeout is invalid").
+			AddAssertion(cfg.WriteTimeout > 0, "adminConfig.writeTimeout is invalid").
+			AddAssertion(cfg.IdleTimeout > 0, "adminConfig.idleTimeout is invalid")
+	}
+
+	if c.warmupConfig != nil {
+		cfg := c.warmupConfig.Normalize()
+		chain = chain.
+			AddAssertion(cfg.MaxHotKeys > 0, "warmupConfig.maxHotKeys is invalid").
+			AddAssertion(cfg.MinHits > 0, "warmupConfig.minHits is invalid").
+			AddAssertion(cfg.Concurrency > 0, "warmupConfig.concurrency is invalid").
+			AddAssertion(cfg.Timeout > 0, "warmupConfig.timeout is invalid")
+	}
+
+	if c.dataSourcePolicy != nil {
+		chain = chain.AddValidator(c.dataSourcePolicy)
+	}
+
+	return chain.Validate()
+}
+
+type keySpaceConfigValidator struct {
+	name string
+	cfg  KeySpaceConfig
+}
+
+func newKeySpaceConfigValidator(name string, cfg KeySpaceConfig) keySpaceConfigValidator {
+	return keySpaceConfigValidator{name: name, cfg: cfg}
+}
+
+func (v keySpaceConfigValidator) Validate() error {
+	chain := validation.New(validation.AllErrors())
+	if v.cfg.MaxBytes < 0 {
+		chain = chain.AddAssertion(false, "keySpace."+v.name+".maxBytes is invalid")
+	}
+	if v.cfg.DefaultTTL < 0 {
+		chain = chain.AddAssertion(false, "keySpace."+v.name+".defaultTTL is invalid")
+	}
+	if v.cfg.ReadTimeout < 0 {
+		chain = chain.AddAssertion(false, "keySpace."+v.name+".readTimeout is invalid")
+	}
+	if v.cfg.WriteTimeout < 0 {
+		chain = chain.AddAssertion(false, "keySpace."+v.name+".writeTimeout is invalid")
+	}
+	if policy := newDataSourceConfig(v.cfg.RateLimit, v.cfg.CircuitBreaker); policy != nil {
+		if err := policy.Validate(); err != nil {
+			chain = chain.AddValidator(validation.NewBooleanValidator(false, err.Error()))
+		}
+	}
 	return chain.Validate()
 }

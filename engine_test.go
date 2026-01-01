@@ -1,26 +1,24 @@
-/*
- * MIT License
- *
- * Copyright (c) 2025 Arsene Tochemey Gandote
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+// MIT License
+//
+// Copyright (c) 2025-2026 Arsene Tochemey Gandote
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 package distcache
 
@@ -30,33 +28,31 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 	"unsafe"
 
 	"github.com/groupcache/groupcache-go/v3"
 	"github.com/groupcache/groupcache-go/v3/transport"
-	"github.com/groupcache/groupcache-go/v3/transport/peer"
 	"github.com/hashicorp/memberlist"
 	"github.com/kapetan-io/tackle/autotls"
 	"github.com/stretchr/testify/require"
 	"github.com/travisjeffery/go-dynaport"
+	"go.opentelemetry.io/otel/attribute"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/tochemey/distcache/discovery"
-	"github.com/tochemey/distcache/discovery/nats"
+	"github.com/tochemey/distcache/admin"
 	"github.com/tochemey/distcache/internal/members"
 	"github.com/tochemey/distcache/internal/pause"
-	util "github.com/tochemey/distcache/internal/pause"
 	"github.com/tochemey/distcache/internal/size"
 	"github.com/tochemey/distcache/internal/syncmap"
 	"github.com/tochemey/distcache/log"
 	mockDiscovery "github.com/tochemey/distcache/mocks/discovery"
 	mocks "github.com/tochemey/distcache/mocks/discovery"
 	"github.com/tochemey/distcache/otel"
+	"github.com/tochemey/distcache/warmup"
 )
 
 func TestEngineErrorsPath(t *testing.T) {
@@ -159,13 +155,17 @@ func TestEngineErrorsPath(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("DeleteMany returns error when remove fails", func(t *testing.T) {
+	t.Run("DeleteMany returns error when RemoveKeys fails", func(t *testing.T) {
 		engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
-		g := &MockGroup{name: "ks", removeErr: errors.New("remove")}
+		g := &MockGroup{name: "ks", removeKeysErr: errors.New("remove")}
 		engine.groups.Set("ks", g)
 
 		err := engine.DeleteMany(context.Background(), "ks", []string{"a"})
 		require.Error(t, err)
+		removeKeysCalls := g.RemoveKeysCalls()
+		require.Len(t, removeKeysCalls, 1)
+		require.Equal(t, []string{"a"}, removeKeysCalls[0])
+		require.Empty(t, g.RemoveCalls())
 	})
 
 	t.Run("DeleteKeySpace returns not found", func(t *testing.T) {
@@ -586,7 +586,7 @@ func TestEngine(t *testing.T) {
 
 		// stop the engine 3
 		require.NoError(t, engine3.Stop(ctx))
-		util.Pause(time.Minute)
+		pause.Pause(time.Minute)
 
 		// let us insert a record with data source 2 and try to get it from any other engine
 		user2 := &User{ID: "user2", Name: "user2", Age: 10}
@@ -914,261 +914,317 @@ func TestFromBytes(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestEngineGetMany(t *testing.T) {
+	t.Run("GetMany returns values in order", func(t *testing.T) {
+		engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+		g := &MockGroup{
+			name: "ks",
+			data: map[string][]byte{
+				"a": []byte("first"),
+				"b": []byte("second"),
+			},
+		}
+		engine.groups.Set("ks", g)
+
+		values, err := engine.GetMany(context.Background(), "ks", []string{"a", "b"})
+		require.NoError(t, err)
+		require.Len(t, values, 2)
+		require.Equal(t, "a", values[0].Key)
+		require.Equal(t, "first", string(values[0].Value))
+		require.Equal(t, "b", values[1].Key)
+		require.Equal(t, "second", string(values[1].Value))
+		require.Equal(t, []string{"a", "b"}, g.GetCalls())
+	})
+
+	t.Run("GetMany returns error on failure", func(t *testing.T) {
+		engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+		g := &MockGroup{name: "ks", getErr: errors.New("get")}
+		engine.groups.Set("ks", g)
+
+		_, err := engine.GetMany(context.Background(), "ks", []string{"a"})
+		require.Error(t, err)
+	})
+
+	t.Run("GetMany returns keyspace not found", func(t *testing.T) {
+		engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+		_, err := engine.GetMany(context.Background(), "missing", []string{"a"})
+		require.ErrorIs(t, err, ErrKeySpaceNotFound)
+	})
+}
+
+func TestUpdateKeySpace(t *testing.T) {
+	t.Run("UpdateKeySpace recreates group with new settings", func(t *testing.T) {
+		engine, daemon, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+		require.NoError(t, engine.createGroups())
+
+		newKeySpace := NewMockKeySpace("ks", 2*size.MB, NewMockDataSource())
+		err := engine.UpdateKeySpace(context.Background(), newKeySpace)
+		require.NoError(t, err)
+
+		spec, ok := engine.keySpaces.Get("ks")
+		require.True(t, ok)
+		require.Equal(t, int64(2*size.MB), spec.config.MaxBytes)
+		require.NotEmpty(t, daemon.newGroupCalls)
+		require.Equal(t, int64(2*size.MB), daemon.newGroupCalls[len(daemon.newGroupCalls)-1].maxBytes)
+	})
+
+	t.Run("UpdateKeySpace returns not found", func(t *testing.T) {
+		engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+		err := engine.UpdateKeySpace(context.Background(), NewMockKeySpace("missing", size.MB, NewMockDataSource()))
+		require.ErrorIs(t, err, ErrKeySpaceNotFound)
+	})
+
+	t.Run("UpdateKeySpace rejects nil keyspace", func(t *testing.T) {
+		engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+		err := engine.UpdateKeySpace(context.Background(), nil)
+		require.Error(t, err)
+	})
+
+	t.Run("UpdateKeySpace rolls back on group creation failure", func(t *testing.T) {
+		engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+		require.NoError(t, engine.createGroups())
+
+		oldSpec, _ := engine.keySpaces.Get("ks")
+		daemon := &MockFailOnceDaemon{}
+		engine.daemon = daemon
+
+		err := engine.UpdateKeySpace(context.Background(), NewMockKeySpace("ks", 2*size.MB, NewMockDataSource()))
+		require.Error(t, err)
+		require.Equal(t, 2, daemon.calls)
+
+		spec, ok := engine.keySpaces.Get("ks")
+		require.True(t, ok)
+		require.Equal(t, oldSpec.config.MaxBytes, spec.config.MaxBytes)
+
+		group, ok := engine.groups.Get("ks")
+		require.True(t, ok)
+		require.NotNil(t, group)
+	})
+}
+
+func TestSnapshotKeySpaces(t *testing.T) {
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	engine.config.readTimeout = 5 * time.Second
+	engine.config.writeTimeout = 6 * time.Second
+
+	spec := &keySpaceWrapper{
+		keyspace: NewMockKeySpace("ks", size.MB, NewMockDataSource()),
+		config: KeySpaceConfig{
+			MaxBytes:     size.MB,
+			DefaultTTL:   time.Second,
+			ReadTimeout:  2 * time.Second,
+			WriteTimeout: 3 * time.Second,
+			WarmKeys:     []string{"alpha", "beta"},
+		},
+	}
+
+	engine.keySpaces.Set("ks", spec)
+	engine.keySpaces.Set("empty", nil)
+	group := &MockGroup{name: "ks"}
+	group.stats.Gets.Add(2)
+	engine.groups.Set("ks", group)
+
+	snapshots := engine.snapshotKeySpaces()
+	require.Len(t, snapshots, 1)
+
+	var snapshot admin.KeySpaceSnapshot
+	for _, ks := range snapshots {
+		if ks.Name == "ks" {
+			snapshot = ks
+		}
+	}
+
+	require.Equal(t, int64(size.MB), snapshot.MaxBytes)
+	require.Equal(t, time.Second, snapshot.DefaultTTL)
+	require.Equal(t, 2*time.Second, snapshot.ReadTimeout)
+	require.Equal(t, 3*time.Second, snapshot.WriteTimeout)
+	require.NotNil(t, snapshot.Stats)
+	require.Equal(t, int64(2), snapshot.Stats.Gets)
+
+	snapshot.WarmKeys[0] = "mutated"
+	require.Equal(t, "alpha", spec.config.WarmKeys[0])
+}
+
+func TestSnapshotKeySpacesWithoutStats(t *testing.T) {
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("custom", size.MB, NewMockDataSource()))
+	engine.keySpaces.Set("custom", &keySpaceWrapper{
+		keyspace: NewMockKeySpace("custom", size.MB, NewMockDataSource()),
+		config: KeySpaceConfig{
+			MaxBytes: size.MB,
+		},
+	})
+	engine.groups.Set("custom", &minimalGroup{name: "custom", main: 12, hot: 3})
+
+	snapshots := engine.snapshotKeySpaces()
+	require.Len(t, snapshots, 1)
+
+	require.Equal(t, "custom", snapshots[0].Name)
+	require.Equal(t, int64(12), snapshots[0].MainCacheBytes)
+	require.Equal(t, int64(3), snapshots[0].HotCacheBytes)
+	require.Nil(t, snapshots[0].Stats)
+}
+
+func TestSnapshotPeersIncludesHostAndRemote(t *testing.T) {
+	engine, _, mlist := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+
+	hostMeta, err := json.Marshal(&Peer{
+		BindAddr:      engine.hostNode.BindAddr,
+		BindPort:      engine.hostNode.BindPort,
+		DiscoveryPort: engine.hostNode.DiscoveryPort,
+	})
+	require.NoError(t, err)
+
+	remoteMeta, err := json.Marshal(&Peer{BindAddr: "127.0.0.2", BindPort: 9000, DiscoveryPort: 9001})
+	require.NoError(t, err)
+
+	mlist.nodes = []*memberlist.Node{
+		{Meta: hostMeta},
+		{Meta: remoteMeta},
+	}
+
+	peers, err := engine.snapshotPeers()
+	require.NoError(t, err)
+	require.Len(t, peers, 2)
+	require.True(t, peers[0].IsSelf)
+	require.Equal(t, "127.0.0.2:9000", peers[1].Address())
+	require.False(t, peers[1].IsSelf)
+}
+
+func TestSnapshotPeersInvalidMeta(t *testing.T) {
+	engine, _, mlist := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	mlist.nodes = []*memberlist.Node{{Meta: []byte("bad")}}
+
+	_, err := engine.snapshotPeers()
+	require.Error(t, err)
+}
+
+func TestEngineInstrumentationNoop(t *testing.T) {
+	cfg := NewConfig(MockProvider{}, []KeySpace{NewMockKeySpace("ks", size.MB, NewMockDataSource())})
+	inst := newInstrumentation(cfg)
+	require.NotNil(t, inst)
+
+	ctx, end := inst.start(context.Background(), "get", "ks")
+	require.NotNil(t, ctx)
+	end(nil)
+	end(errors.New("fail"))
+}
+
+func TestEngineInstrumentationWithProviders(t *testing.T) {
+	traceCfg := otel.NewTracerConfig(
+		otel.WithTracerProvider(tracenoop.NewTracerProvider()),
+		otel.WithAttributes(attribute.String("env", "test")),
+	)
+	metricCfg := otel.NewMetricConfig(
+		otel.WithMeterProvider(metricnoop.NewMeterProvider()),
+	)
+	cfg := NewConfig(
+		MockProvider{},
+		[]KeySpace{NewMockKeySpace("ks", size.MB, NewMockDataSource())},
+		WithTracing(traceCfg),
+		WithMetrics(metricCfg),
+	)
+
+	inst := newInstrumentation(cfg)
+	require.NotNil(t, inst)
+
+	ctx, end := inst.start(context.Background(), "put", "ks")
+	require.NotNil(t, ctx)
+	end(nil)
+	end(errors.New("fail"))
+}
+
+func TestCollectWarmupKeys(t *testing.T) {
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	cfg := warmup.Config{MaxHotKeys: 2, MinHits: 1, Concurrency: 1, Timeout: time.Second, WarmOnJoin: true, WarmOnLeave: true}
+	normalized := cfg.Normalize()
+
+	engine.warmupConfig = &normalized
+	engine.hotKeys = warmup.NewTracker(normalized.MaxHotKeys)
+	engine.hotKeys.Record("ks", "hot1")
+	engine.hotKeys.Record("ks", "hot1")
+	engine.hotKeys.Record("ks", "hot2")
+
+	spec := &keySpaceWrapper{
+		keyspace: NewMockKeySpace("ks", size.MB, NewMockDataSource()),
+		config: KeySpaceConfig{
+			WarmKeys: []string{"static"},
+		},
+	}
+
+	keys := engine.collectWarmupKeys("ks", spec, normalized)
+	require.ElementsMatch(t, []string{"static", "hot1", "hot2"}, keys)
+}
+
+func TestPrefetchKeysHonorsReadTimeout(t *testing.T) {
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	recorder := &deadlineRecorder{}
+	group := &MockGroup{
+		name: "ks",
+		getter: groupcache.GetterFunc(func(ctx context.Context, key string, dest transport.Sink) error {
+			if deadline, ok := ctx.Deadline(); ok {
+				recorder.record(time.Until(deadline))
+			}
+			return dest.SetBytes([]byte(key), time.Time{})
+		}),
+	}
+	engine.groups.Set("ks", group)
+
+	specTimeout := 100 * time.Millisecond
+	spec := &keySpaceWrapper{
+		keyspace: NewMockKeySpace("ks", size.MB, NewMockDataSource()),
+		config: KeySpaceConfig{
+			ReadTimeout: specTimeout,
+		},
+	}
+
+	engine.prefetchKeys("ks", spec, []string{"a", "b"}, warmup.Config{
+		Concurrency: 2,
+		Timeout:     500 * time.Millisecond,
+	})
+
+	require.ElementsMatch(t, []string{"a", "b"}, group.GetCalls())
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	require.Len(t, recorder.deadlines, 2)
+	for _, deadline := range recorder.deadlines {
+		require.Greater(t, deadline, time.Duration(0))
+		require.LessOrEqual(t, deadline, specTimeout)
+	}
+}
+
+func TestWarmupOnClusterEventRespectsConfig(t *testing.T) {
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	spec := &keySpaceWrapper{
+		keyspace: NewMockKeySpace("ks", size.MB, NewMockDataSource()),
+		config: KeySpaceConfig{
+			WarmKeys: []string{"hot"},
+		},
+	}
+	engine.keySpaces.Set("ks", spec)
+	group := &MockGroup{name: "ks"}
+	engine.groups.Set("ks", group)
+
+	cfg := warmup.Config{
+		MaxHotKeys:  10,
+		MinHits:     1,
+		Concurrency: 1,
+		Timeout:     50 * time.Millisecond,
+		WarmOnLeave: true,
+	}
+	normalized := cfg.Normalize()
+	engine.warmupConfig = &normalized
+
+	engine.warmupOnClusterEvent(memberlist.NodeJoin)
+	time.Sleep(50 * time.Millisecond)
+	require.Empty(t, group.GetCalls())
+
+	engine.warmupOnClusterEvent(memberlist.NodeLeave)
+	require.Eventually(t, func() bool {
+		return group.GetCallsLen() == 1
+	}, 500*time.Millisecond, 20*time.Millisecond)
+}
+
 func extractHTTPOpts(tp *transport.HttpTransport) transport.HttpTransportOptions {
 	val := reflect.ValueOf(tp).Elem().FieldByName("opts")
 	return reflect.NewAt(val.Type(), unsafe.Pointer(val.UnsafeAddr())).Elem().Interface().(transport.HttpTransportOptions)
 }
-
-type MockErrDataSource struct {
-	err error
-}
-
-func (s *MockErrDataSource) Fetch(context.Context, string) ([]byte, error) { return nil, s.err }
-
-type unitMocks struct {
-	daemon     *MockDaemon
-	memberlist *MockMemberlist
-}
-
-func newMockEngine(t *testing.T, provider discovery.Provider, keySpaces ...KeySpace) (*engine, *MockDaemon, *MockMemberlist) {
-	t.Helper()
-
-	cfg := NewConfig(provider, keySpaces,
-		WithLogger(log.DiscardLogger),
-		WithBindAddr("127.0.0.1"),
-		WithBindPort(0),
-		WithDiscoveryPort(0),
-	)
-
-	engAny, err := NewEngine(cfg)
-	require.NoError(t, err)
-	eng := engAny.(*engine)
-
-	daemon := &MockDaemon{}
-	memberlistMock := &MockMemberlist{}
-
-	eng.newTransportFunc = func(members.TransportConfig) (memberlist.Transport, error) { return &MockTransport{}, nil }
-	eng.createMemberlistFunc = func(*memberlist.Config) (memberlistAPI, error) { return memberlistMock, nil }
-	eng.listenAndServeFunc = func(context.Context, string, groupcache.Options) (daemonAPI, error) { return daemon, nil }
-	eng.mlist = memberlistMock
-	eng.daemon = daemon
-
-	return eng, daemon, memberlistMock
-}
-
-type MockTransport struct{}
-
-func (x *MockTransport) FinalAdvertiseAddr(ip string, port int) (net.IP, int, error) {
-	return net.ParseIP(ip), port, nil
-}
-
-func (x *MockTransport) WriteTo(b []byte, addr string) (time.Time, error) {
-	return time.Now(), nil
-}
-
-func (x *MockTransport) PacketCh() <-chan *memberlist.Packet {
-	return make(chan *memberlist.Packet)
-}
-
-func (x *MockTransport) DialTimeout(addr string, timeout time.Duration) (net.Conn, error) {
-	c1, c2 := net.Pipe()
-	_ = c1.Close()
-	return c2, nil
-}
-
-func (x *MockTransport) StreamCh() <-chan net.Conn {
-	return make(chan net.Conn)
-}
-
-func (x *MockTransport) Shutdown() error { return nil }
-
-type MockMemberlist struct {
-	nodes          []*memberlist.Node
-	joinCalledWith [][]string
-	leaveCalled    bool
-	joinErr        error
-	leaveErr       error
-	shutdownErr    error
-}
-
-func (x *MockMemberlist) Members() []*memberlist.Node {
-	return x.nodes
-}
-
-func (x *MockMemberlist) Join(existing []string) (int, error) {
-	x.joinCalledWith = append(x.joinCalledWith, existing)
-	if x.joinErr != nil {
-		return 0, x.joinErr
-	}
-	return len(existing), nil
-}
-
-func (x *MockMemberlist) Leave(_ time.Duration) error {
-	x.leaveCalled = true
-	return x.leaveErr
-}
-
-func (x *MockMemberlist) Shutdown() error { return x.shutdownErr }
-
-func startEngine(t *testing.T, serverAddr string, keySpaces []KeySpace) (Engine, discovery.Provider) {
-	// create a context
-	ctx := context.TODO()
-
-	// generate the ports for the single startNode
-	ports := dynaport.Get(2)
-	discoveryPort := ports[0]
-	bindPort := ports[1]
-
-	host := "127.0.0.1"
-	provider := nats.NewDiscovery(&nats.Config{
-		Server:        fmt.Sprintf("nats://%s", serverAddr),
-		Subject:       "example",
-		Host:          host,
-		DiscoveryPort: discoveryPort,
-	})
-
-	config := NewConfig(provider, keySpaces,
-		WithBindAddr(host),
-		WithLogger(log.DiscardLogger),
-		WithDiscoveryPort(discoveryPort),
-		WithBindPort(bindPort))
-
-	engine, err := NewEngine(config)
-	require.NoError(t, err)
-	require.NotNil(t, engine)
-
-	// start the node
-	require.NoError(t, engine.Start(ctx))
-
-	util.Pause(500 * time.Millisecond)
-
-	// return the cluster startNode
-	return engine, provider
-}
-
-func startSecuredEngine(t *testing.T, serverAddr string, keySpaces []KeySpace, info *TLSInfo) (Engine, discovery.Provider) {
-	// create a context
-	ctx := context.TODO()
-
-	// generate the ports for the single startNode
-	ports := dynaport.Get(2)
-	discoveryPort := ports[0]
-	bindPort := ports[1]
-
-	host := "127.0.0.1"
-	provider := nats.NewDiscovery(&nats.Config{
-		Server:        fmt.Sprintf("nats://%s", serverAddr),
-		Subject:       "example",
-		Host:          host,
-		DiscoveryPort: discoveryPort,
-	})
-
-	config := NewConfig(provider, keySpaces,
-		WithBindAddr(host),
-		WithLogger(log.DiscardLogger),
-		WithDiscoveryPort(discoveryPort),
-		WithShutdownTimeout(3*time.Second),
-		WithTLS(info),
-		WithBindPort(bindPort))
-
-	engine, err := NewEngine(config)
-	require.NoError(t, err)
-	require.NotNil(t, engine)
-
-	// start the node
-	require.NoError(t, engine.Start(ctx))
-
-	util.Pause(500 * time.Millisecond)
-
-	// return the cluster startNode
-	return engine, provider
-}
-
-type MockDaemon struct {
-	address        string
-	setPeersCalls  [][]peer.Info
-	groups         map[string]transport.Group
-	setPeersErr    error
-	newGroupErr    error
-	shutdownCalled bool
-	mu             sync.Mutex
-}
-
-func (x *MockDaemon) SetPeers(_ context.Context, infos []peer.Info) error {
-	x.mu.Lock()
-	x.setPeersCalls = append(x.setPeersCalls, infos)
-	x.mu.Unlock()
-	return x.setPeersErr
-}
-
-func (x *MockDaemon) NewGroup(name string, _ int64, getter groupcache.Getter) (transport.Group, error) {
-	if x.newGroupErr != nil {
-		return nil, x.newGroupErr
-	}
-	if x.groups == nil {
-		x.groups = make(map[string]transport.Group)
-	}
-	g := &MockGroup{name: name, getter: getter}
-	x.groups[name] = g
-	return g, nil
-}
-
-func (x *MockDaemon) RemoveGroup(name string) {
-	delete(x.groups, name)
-}
-
-func (x *MockDaemon) Shutdown(_ context.Context) error {
-	x.shutdownCalled = true
-	return nil
-}
-
-func (x *MockDaemon) setPeersCallsLen() int {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	return len(x.setPeersCalls)
-}
-
-type MockGroup struct {
-	name      string
-	data      map[string][]byte
-	setErr    error
-	getErr    error
-	removeErr error
-	getter    groupcache.Getter
-}
-
-func (g *MockGroup) Set(_ context.Context, key string, value []byte, _ time.Time, _ bool) error {
-	if g.setErr != nil {
-		return g.setErr
-	}
-	if g.data == nil {
-		g.data = make(map[string][]byte)
-	}
-	g.data[key] = value
-	return nil
-}
-
-func (g *MockGroup) Get(ctx context.Context, key string, dest transport.Sink) error {
-	if g.getErr != nil {
-		return g.getErr
-	}
-	if g.getter != nil {
-		return g.getter.Get(ctx, key, dest)
-	}
-	value, ok := g.data[key]
-	if !ok {
-		return fmt.Errorf("not found")
-	}
-	return dest.SetBytes(value, time.Time{})
-}
-
-func (g *MockGroup) Remove(_ context.Context, key string) error {
-	if g.removeErr != nil {
-		return g.removeErr
-	}
-	delete(g.data, key)
-	return nil
-}
-
-func (g *MockGroup) UsedBytes() (int64, int64) { return 0, 0 }
-func (g *MockGroup) Name() string              { return g.name }

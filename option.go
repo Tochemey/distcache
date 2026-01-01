@@ -1,35 +1,35 @@
-/*
- * MIT License
- *
- * Copyright (c) 2025 Arsene Tochemey Gandote
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+// MIT License
+//
+// Copyright (c) 2025-2026 Arsene Tochemey Gandote
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 package distcache
 
 import (
 	"time"
 
+	"github.com/tochemey/distcache/admin"
 	"github.com/tochemey/distcache/hash"
 	"github.com/tochemey/distcache/log"
 	"github.com/tochemey/distcache/otel"
+	"github.com/tochemey/distcache/warmup"
 )
 
 // Option defines a configuration option that can be applied to a Config.
@@ -397,4 +397,228 @@ func WithTracing(traceConfig *otel.TracerConfig) Option {
 	return OptionFunc(func(config *Config) {
 		config.traceConfig = traceConfig
 	})
+}
+
+// WithAdminServer configures the admin server to listen on the provided address.
+//
+// This enables HTTP diagnostics endpoints (peers, keyspaces).
+//
+// Parameters:
+//   - listenAddr: The address the admin server will bind to (host:port).
+//
+// Returns:
+//   - Option: A functional option that applies the admin server configuration.
+func WithAdminServer(listenAddr string) Option {
+	return OptionFunc(func(config *Config) {
+		config.adminConfig = &admin.Config{ListenAddr: listenAddr}
+	})
+}
+
+// WithAdminConfig configures the admin server with the provided settings.
+//
+// Parameters:
+//   - adminConfig: The admin server configuration to apply.
+//
+// Returns:
+//   - Option: A functional option that applies the admin server configuration.
+func WithAdminConfig(adminConfig admin.Config) Option {
+	return OptionFunc(func(config *Config) {
+		cfg := adminConfig
+		config.adminConfig = &cfg
+	})
+}
+
+// WithWarmup enables prefetching of hot keys on cluster topology changes.
+//
+// Parameters:
+//   - cfg: Warmup configuration controlling hot key tracking and prefetching.
+//
+// Returns:
+//   - Option: A functional option that applies the warmup configuration.
+func WithWarmup(cfg warmup.Config) Option {
+	return OptionFunc(func(config *Config) {
+		warm := cfg
+		config.warmupConfig = &warm
+	})
+}
+
+// WithRateLimiter configures the engine-level rate limiter for data sources.
+//
+// Parameters:
+//   - cfg: The rate limiter configuration to apply.
+//
+// Returns:
+//   - Option: A functional option that applies the rate limiter configuration.
+func WithRateLimiter(cfg RateLimitConfig) Option {
+	return OptionFunc(func(config *Config) {
+		policy := ensureDataSourcePolicy(config)
+		rateLimit := cfg
+		policy.RateLimit = &rateLimit
+	})
+}
+
+// WithCircuitBreaker configures the engine-level circuit breaker for data sources.
+//
+// Parameters:
+//   - cfg: The circuit breaker configuration to apply.
+//
+// Returns:
+//   - Option: A functional option that applies the circuit breaker configuration.
+func WithCircuitBreaker(cfg CircuitBreakerConfig) Option {
+	return OptionFunc(func(config *Config) {
+		policy := ensureDataSourcePolicy(config)
+		breaker := cfg
+		policy.CircuitBreaker = &breaker
+	})
+}
+
+// WithKeySpaceMaxBytes configures the max bytes override for a specific keyspace.
+//
+// When set to a value greater than zero, this override replaces KeySpace.MaxBytes
+// for the named keyspace.
+//
+// Parameters:
+//   - name: The keyspace name to configure.
+//   - maxBytes: The maximum bytes to allocate to the keyspace.
+//
+// Returns:
+//   - Option: A functional option that applies the keyspace max bytes override.
+func WithKeySpaceMaxBytes(name string, maxBytes int64) Option {
+	return OptionFunc(func(config *Config) {
+		updateKeySpaceConfig(config, name, func(cfg *KeySpaceConfig) {
+			cfg.MaxBytes = maxBytes
+		})
+	})
+}
+
+// WithKeySpaceDefaultTTL configures the default TTL for a specific keyspace.
+//
+// When an entry has no explicit expiration, this TTL is applied for the named
+// keyspace.
+//
+// Parameters:
+//   - name: The keyspace name to configure.
+//   - ttl: The default TTL to apply to entries without explicit expiration.
+//
+// Returns:
+//   - Option: A functional option that applies the keyspace default TTL.
+func WithKeySpaceDefaultTTL(name string, ttl time.Duration) Option {
+	return OptionFunc(func(config *Config) {
+		updateKeySpaceConfig(config, name, func(cfg *KeySpaceConfig) {
+			cfg.DefaultTTL = ttl
+		})
+	})
+}
+
+// WithKeySpaceReadTimeout configures the read timeout for a specific keyspace.
+//
+// When set to a value greater than zero, this override replaces the engine
+// ReadTimeout for the named keyspace.
+//
+// Parameters:
+//   - name: The keyspace name to configure.
+//   - timeout: The read timeout to enforce for the keyspace.
+//
+// Returns:
+//   - Option: A functional option that applies the keyspace read timeout.
+func WithKeySpaceReadTimeout(name string, timeout time.Duration) Option {
+	return OptionFunc(func(config *Config) {
+		updateKeySpaceConfig(config, name, func(cfg *KeySpaceConfig) {
+			cfg.ReadTimeout = timeout
+		})
+	})
+}
+
+// WithKeySpaceWriteTimeout configures the write timeout for a specific keyspace.
+//
+// When set to a value greater than zero, this override replaces the engine
+// WriteTimeout for the named keyspace.
+//
+// Parameters:
+//   - name: The keyspace name to configure.
+//   - timeout: The write timeout to enforce for the keyspace.
+//
+// Returns:
+//   - Option: A functional option that applies the keyspace write timeout.
+func WithKeySpaceWriteTimeout(name string, timeout time.Duration) Option {
+	return OptionFunc(func(config *Config) {
+		updateKeySpaceConfig(config, name, func(cfg *KeySpaceConfig) {
+			cfg.WriteTimeout = timeout
+		})
+	})
+}
+
+// WithKeySpaceWarmKeys configures warm keys for a specific keyspace.
+//
+// Warm keys are prefetched when cluster topology changes (join/leave events),
+// and are combined with observed hot keys when warmup is enabled.
+//
+// Parameters:
+//   - name: The keyspace name to configure.
+//   - keys: The list of warm keys to prefetch.
+//
+// Returns:
+//   - Option: A functional option that applies the keyspace warm keys.
+func WithKeySpaceWarmKeys(name string, keys []string) Option {
+	return OptionFunc(func(config *Config) {
+		updateKeySpaceConfig(config, name, func(cfg *KeySpaceConfig) {
+			cfg.WarmKeys = append([]string(nil), keys...)
+		})
+	})
+}
+
+// WithKeySpaceRateLimiter configures the rate limiter for a specific keyspace.
+//
+// When set, this rate limiter overrides the engine-level rate limiter for the
+// named keyspace.
+//
+// Parameters:
+//   - name: The keyspace name to configure.
+//   - cfg: The rate limiter configuration to apply.
+//
+// Returns:
+//   - Option: A functional option that applies the keyspace rate limiter.
+func WithKeySpaceRateLimiter(name string, cfg RateLimitConfig) Option {
+	return OptionFunc(func(config *Config) {
+		updateKeySpaceConfig(config, name, func(ksCfg *KeySpaceConfig) {
+			rateLimit := cfg
+			ksCfg.RateLimit = &rateLimit
+		})
+	})
+}
+
+// WithKeySpaceCircuitBreaker configures the circuit breaker for a specific keyspace.
+//
+// When set, this circuit breaker overrides the engine-level circuit breaker for
+// the named keyspace.
+//
+// Parameters:
+//   - name: The keyspace name to configure.
+//   - cfg: The circuit breaker configuration to apply.
+//
+// Returns:
+//   - Option: A functional option that applies the keyspace circuit breaker.
+func WithKeySpaceCircuitBreaker(name string, cfg CircuitBreakerConfig) Option {
+	return OptionFunc(func(config *Config) {
+		updateKeySpaceConfig(config, name, func(ksCfg *KeySpaceConfig) {
+			breaker := cfg
+			ksCfg.CircuitBreaker = &breaker
+		})
+	})
+}
+
+func ensureDataSourcePolicy(config *Config) *dataSourceConfig {
+	if config.dataSourcePolicy == nil {
+		config.dataSourcePolicy = &dataSourceConfig{}
+	}
+	return config.dataSourcePolicy
+}
+
+func updateKeySpaceConfig(config *Config, name string, apply func(*KeySpaceConfig)) {
+	if config.keySpaceConfigs == nil {
+		config.keySpaceConfigs = make(map[string]KeySpaceConfig)
+	}
+	cfg := config.keySpaceConfigs[name]
+	apply(&cfg)
+	config.keySpaceConfigs[name] = cfg
 }
