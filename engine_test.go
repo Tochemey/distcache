@@ -1,26 +1,24 @@
-/*
- * MIT License
- *
- * Copyright (c) 2025 Arsene Tochemey Gandote
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+// MIT License
+//
+// Copyright (c) 2025-2026 Arsene Tochemey Gandote
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 package distcache
 
@@ -50,7 +48,6 @@ import (
 	"github.com/tochemey/distcache/discovery/nats"
 	"github.com/tochemey/distcache/internal/members"
 	"github.com/tochemey/distcache/internal/pause"
-	util "github.com/tochemey/distcache/internal/pause"
 	"github.com/tochemey/distcache/internal/size"
 	"github.com/tochemey/distcache/internal/syncmap"
 	"github.com/tochemey/distcache/log"
@@ -159,13 +156,16 @@ func TestEngineErrorsPath(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("DeleteMany returns error when remove fails", func(t *testing.T) {
+	t.Run("DeleteMany returns error when RemoveKeys fails", func(t *testing.T) {
 		engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
-		g := &MockGroup{name: "ks", removeErr: errors.New("remove")}
+		g := &MockGroup{name: "ks", removeKeysErr: errors.New("remove")}
 		engine.groups.Set("ks", g)
 
 		err := engine.DeleteMany(context.Background(), "ks", []string{"a"})
 		require.Error(t, err)
+		require.Len(t, g.removeKeysCalls, 1)
+		require.Equal(t, []string{"a"}, g.removeKeysCalls[0])
+		require.Empty(t, g.removeCalls)
 	})
 
 	t.Run("DeleteKeySpace returns not found", func(t *testing.T) {
@@ -586,7 +586,7 @@ func TestEngine(t *testing.T) {
 
 		// stop the engine 3
 		require.NoError(t, engine3.Stop(ctx))
-		util.Pause(time.Minute)
+		pause.Pause(time.Minute)
 
 		// let us insert a record with data source 2 and try to get it from any other engine
 		user2 := &User{ID: "user2", Name: "user2", Age: 10}
@@ -1040,7 +1040,7 @@ func startEngine(t *testing.T, serverAddr string, keySpaces []KeySpace) (Engine,
 	// start the node
 	require.NoError(t, engine.Start(ctx))
 
-	util.Pause(500 * time.Millisecond)
+	pause.Pause(500 * time.Millisecond)
 
 	// return the cluster startNode
 	return engine, provider
@@ -1078,7 +1078,7 @@ func startSecuredEngine(t *testing.T, serverAddr string, keySpaces []KeySpace, i
 	// start the node
 	require.NoError(t, engine.Start(ctx))
 
-	util.Pause(500 * time.Millisecond)
+	pause.Pause(500 * time.Millisecond)
 
 	// return the cluster startNode
 	return engine, provider
@@ -1129,12 +1129,15 @@ func (x *MockDaemon) setPeersCallsLen() int {
 }
 
 type MockGroup struct {
-	name      string
-	data      map[string][]byte
-	setErr    error
-	getErr    error
-	removeErr error
-	getter    groupcache.Getter
+	name            string
+	data            map[string][]byte
+	setErr          error
+	getErr          error
+	removeErr       error
+	removeKeysErr   error
+	removeCalls     []string
+	removeKeysCalls [][]string
+	getter          groupcache.Getter
 }
 
 func (g *MockGroup) Set(_ context.Context, key string, value []byte, _ time.Time, _ bool) error {
@@ -1163,6 +1166,7 @@ func (g *MockGroup) Get(ctx context.Context, key string, dest transport.Sink) er
 }
 
 func (g *MockGroup) Remove(_ context.Context, key string) error {
+	g.removeCalls = append(g.removeCalls, key)
 	if g.removeErr != nil {
 		return g.removeErr
 	}
@@ -1172,3 +1176,16 @@ func (g *MockGroup) Remove(_ context.Context, key string) error {
 
 func (g *MockGroup) UsedBytes() (int64, int64) { return 0, 0 }
 func (g *MockGroup) Name() string              { return g.name }
+func (g *MockGroup) RemoveKeys(_ context.Context, keys ...string) error {
+	g.removeKeysCalls = append(g.removeKeysCalls, keys)
+	if g.removeKeysErr != nil {
+		return g.removeKeysErr
+	}
+	if g.removeErr != nil {
+		return g.removeErr
+	}
+	for _, key := range keys {
+		delete(g.data, key)
+	}
+	return nil
+}

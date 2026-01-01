@@ -1,26 +1,24 @@
-/*
- * MIT License
- *
- * Copyright (c) 2025 Arsene Tochemey Gandote
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+// MIT License
+//
+// Copyright (c) 2025-2026 Arsene Tochemey Gandote
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 package distcache
 
@@ -175,7 +173,7 @@ type engine struct {
 	eventsLock            sync.Mutex
 	lock                  sync.Mutex
 	daemon                daemonAPI
-	groups                *syncmap.SyncMap[string, transport.Group]
+	groups                *syncmap.Map[string, transport.Group]
 	newTransportFunc      func(members.TransportConfig) (memberlist.Transport, error)
 	createMemberlistFunc  func(*memberlist.Config) (memberlistAPI, error)
 	listenAndServeFunc    func(context.Context, string, groupcache.Options) (daemonAPI, error)
@@ -306,6 +304,230 @@ func (x *engine) Start(ctx context.Context) (err error) {
 	go x.eventsListener(eventsCh)
 
 	x.config.Logger().Infof("Cache engine started: host=%s.", x.hostNode.Address())
+	return nil
+}
+
+// Stop gracefully shuts down the distributed cache engine.
+// It ensures that any ongoing operations complete and that the cluster
+// state is properly maintained before termination.
+//
+// Parameters:
+//   - ctx: A context used to manage shutdown timeouts or cancellations.
+//
+// Returns:
+//   - error: An error if the shutdown process encounters issues, otherwise nil.
+func (x *engine) Stop(ctx context.Context) error { // nolint
+	x.lock.Lock()
+	defer x.lock.Unlock()
+
+	x.config.Logger().Infof("Cache engine on host=%s stopping...", x.hostNode.Address())
+
+	if !x.started.Load() {
+		return nil
+	}
+
+	// stop the events loop
+	close(x.stopEventsListenerSig)
+
+	provider := x.config.DiscoveryProvider()
+	if err := errorschain.
+		New(errorschain.WithFailFast()).
+		AddRunner(func() error { return x.mlist.Leave(x.config.ShutdownTimeout()) }).
+		AddRunner(provider.Deregister).
+		AddRunner(provider.Close).
+		AddRunner(x.mlist.Shutdown).
+		AddContextRunner(x.daemon.Shutdown).
+		Run(); err != nil {
+		return err
+	}
+
+	x.config.Logger().Infof("Cache engine on host=%s stopped.", x.hostNode.Address())
+	return nil
+}
+
+// Put stores a single key/value pair in the cache.
+//
+// Parameters:
+//   - ctx: The context for cancellation and deadlines.
+//   - keyspace: The keyspace in which to store the key/value pair.
+//   - entry: The key/value pair to store with an optional expiration time.
+//     If Expiry is set to the zero value (time.Time{}), the entry does not expire.
+//
+// Returns an error if the operation fails.
+func (x *engine) Put(ctx context.Context, keyspace string, entry *Entry) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
+
+	group, ok := x.groups.Get(keyspace)
+	if !ok {
+		return ErrKeySpaceNotFound
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
+	defer cancel()
+
+	return group.Set(ctx, entry.Key, entry.Value, entry.Expiry, true)
+}
+
+// PutMany stores multiple key/value pairs in the cache.
+//
+// Parameters:
+//   - ctx: The context for cancellation and deadlines.
+//   - keyspace: The keyspace in which to store the key/value pairs.
+//   - kvs: A slice of key/value pairs to store.
+//
+// Returns an error if the operation fails.
+func (x *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
+
+	group, ok := x.groups.Get(keyspace)
+	if !ok {
+		return ErrKeySpaceNotFound
+	}
+
+	for _, entry := range entries {
+		ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
+		if err := group.Set(ctx, entry.Key, entry.Value, entry.Expiry, true); err != nil {
+			cancel()
+			return err
+		}
+		cancel()
+	}
+
+	return nil
+}
+
+// Get retrieves a specific key/value pair from the cache.
+//
+// Parameters:
+//   - ctx: The context for cancellation and deadlines.
+//   - keyspace: The keyspace from which to retrieve the key/value pair.
+//   - key: The key identifying the desired key/value pair.
+//
+// Returns the key/value pair if found, or an error if the operation fails or the key does not exist.
+func (x *engine) Get(ctx context.Context, keyspace string, key string) (*KV, error) {
+	x.lock.Lock()
+	defer x.lock.Unlock()
+
+	group, ok := x.groups.Get(keyspace)
+	if !ok {
+		return nil, ErrKeySpaceNotFound
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, x.config.ReadTimeout())
+	defer cancel()
+
+	var value []byte
+	if err := group.Get(ctx, key, transport.AllocatingByteSliceSink(&value)); err != nil {
+		return nil, err
+	}
+
+	return &KV{
+		Key:   key,
+		Value: value,
+	}, nil
+}
+
+// Delete removes a specific key/value pair from the cache.
+//
+// Parameters:
+//   - ctx: The context for cancellation and deadlines.
+//   - keyspace: The keyspace from which to delete the key/value pair.
+//   - key: The key identifying the key/value pair to be deleted.
+//
+// Returns an error if the operation fails.
+func (x *engine) Delete(ctx context.Context, keyspace string, key string) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
+
+	group, ok := x.groups.Get(keyspace)
+	if !ok {
+		return ErrKeySpaceNotFound
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
+	defer cancel()
+
+	return group.Remove(ctx, key)
+}
+
+// DeleteMany removes multiple key/value pairs from the cache.
+//
+// Parameters:
+//   - ctx: The context for cancellation and deadlines.
+//   - keyspace: The keyspace from which to delete the key/value pairs.
+//   - keys: A slice of keys identifying the key/value pairs to be deleted.
+//
+// Returns an error if the operation fails.
+func (x *engine) DeleteMany(ctx context.Context, keyspace string, keys []string) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
+
+	group, ok := x.groups.Get(keyspace)
+	if !ok {
+		return ErrKeySpaceNotFound
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
+	defer cancel()
+
+	return group.RemoveKeys(ctx, keys...)
+}
+
+// KeySpaces returns the list of available KeySpaces from the cache.
+//
+// Returns an empty list if there are no keyspaces
+func (x *engine) KeySpaces() []string {
+	x.lock.Lock()
+	defer x.lock.Unlock()
+	return x.groups.Keys()
+}
+
+// DeleteKeySpace delete a given keySpace from the cache.
+//
+// Parameters:
+//   - ctx: The context for cancellation and deadlines.
+//   - keyspace: The keyspace from which to delete the key/value pairs.
+//
+// Returns an error if the operation fails.
+func (x *engine) DeleteKeySpace(ctx context.Context, keyspace string) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
+
+	group, ok := x.groups.Get(keyspace)
+	if !ok {
+		return ErrKeySpaceNotFound
+	}
+
+	_, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
+	defer cancel()
+
+	x.daemon.RemoveGroup(group.Name())
+	x.groups.Delete(keyspace)
+	return nil
+}
+
+// DeleteKeyspaces removes multiple keyspaces from the cache.
+//
+// Parameters:
+//   - ctx: The context for cancellation and deadlines.
+//   - keyspaces: A slice of keyspaces to be deleted.
+//
+// Returns an error if the operation fails.
+func (x *engine) DeleteKeyspaces(ctx context.Context, keyspaces []string) error {
+	x.lock.Lock()
+	defer x.lock.Unlock()
+
+	_, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
+	defer cancel()
+
+	for _, keyspace := range keyspaces {
+		if group, ok := x.groups.Get(keyspace); ok {
+			x.daemon.RemoveGroup(group.Name())
+			x.groups.Delete(keyspace)
+		}
+	}
 	return nil
 }
 
@@ -492,235 +714,6 @@ func (x *engine) bootstrapCluster() error {
 		AddRunner(provider.Register).
 		AddContextRunner(x.joinCluster).
 		Run()
-}
-
-// Stop gracefully shuts down the distributed cache engine.
-// It ensures that any ongoing operations complete and that the cluster
-// state is properly maintained before termination.
-//
-// Parameters:
-//   - ctx: A context used to manage shutdown timeouts or cancellations.
-//
-// Returns:
-//   - error: An error if the shutdown process encounters issues, otherwise nil.
-func (x *engine) Stop(ctx context.Context) error { // nolint
-	x.lock.Lock()
-	defer x.lock.Unlock()
-
-	x.config.Logger().Infof("Cache engine on host=%s stopping...", x.hostNode.Address())
-
-	if !x.started.Load() {
-		return nil
-	}
-
-	// stop the events loop
-	close(x.stopEventsListenerSig)
-
-	provider := x.config.DiscoveryProvider()
-	if err := errorschain.
-		New(errorschain.WithFailFast()).
-		AddRunner(func() error { return x.mlist.Leave(x.config.ShutdownTimeout()) }).
-		AddRunner(provider.Deregister).
-		AddRunner(provider.Close).
-		AddRunner(x.mlist.Shutdown).
-		AddContextRunner(x.daemon.Shutdown).
-		Run(); err != nil {
-		return err
-	}
-
-	x.config.Logger().Infof("Cache engine on host=%s stopped.", x.hostNode.Address())
-	return nil
-}
-
-// Put stores a single key/value pair in the cache.
-//
-// Parameters:
-//   - ctx: The context for cancellation and deadlines.
-//   - keyspace: The keyspace in which to store the key/value pair.
-//   - entry: The key/value pair to store with an optional expiration time.
-//     If Expiry is set to the zero value (time.Time{}), the entry does not expire.
-//
-// Returns an error if the operation fails.
-func (x *engine) Put(ctx context.Context, keyspace string, entry *Entry) error {
-	x.lock.Lock()
-	defer x.lock.Unlock()
-
-	group, ok := x.groups.Get(keyspace)
-	if !ok {
-		return ErrKeySpaceNotFound
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
-	defer cancel()
-
-	return group.Set(ctx, entry.Key, entry.Value, entry.Expiry, true)
-}
-
-// PutMany stores multiple key/value pairs in the cache.
-//
-// Parameters:
-//   - ctx: The context for cancellation and deadlines.
-//   - keyspace: The keyspace in which to store the key/value pairs.
-//   - kvs: A slice of key/value pairs to store.
-//
-// Returns an error if the operation fails.
-func (x *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry) error {
-	x.lock.Lock()
-	defer x.lock.Unlock()
-
-	group, ok := x.groups.Get(keyspace)
-	if !ok {
-		return ErrKeySpaceNotFound
-	}
-
-	for _, entry := range entries {
-		ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
-		if err := group.Set(ctx, entry.Key, entry.Value, entry.Expiry, true); err != nil {
-			cancel()
-			return err
-		}
-		cancel()
-	}
-
-	return nil
-}
-
-// Get retrieves a specific key/value pair from the cache.
-//
-// Parameters:
-//   - ctx: The context for cancellation and deadlines.
-//   - keyspace: The keyspace from which to retrieve the key/value pair.
-//   - key: The key identifying the desired key/value pair.
-//
-// Returns the key/value pair if found, or an error if the operation fails or the key does not exist.
-func (x *engine) Get(ctx context.Context, keyspace string, key string) (*KV, error) {
-	x.lock.Lock()
-	defer x.lock.Unlock()
-
-	group, ok := x.groups.Get(keyspace)
-	if !ok {
-		return nil, ErrKeySpaceNotFound
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, x.config.ReadTimeout())
-	defer cancel()
-
-	var value []byte
-	if err := group.Get(ctx, key, transport.AllocatingByteSliceSink(&value)); err != nil {
-		return nil, err
-	}
-
-	return &KV{
-		Key:   key,
-		Value: value,
-	}, nil
-}
-
-// Delete removes a specific key/value pair from the cache.
-//
-// Parameters:
-//   - ctx: The context for cancellation and deadlines.
-//   - keyspace: The keyspace from which to delete the key/value pair.
-//   - key: The key identifying the key/value pair to be deleted.
-//
-// Returns an error if the operation fails.
-func (x *engine) Delete(ctx context.Context, keyspace string, key string) error {
-	x.lock.Lock()
-	defer x.lock.Unlock()
-
-	group, ok := x.groups.Get(keyspace)
-	if !ok {
-		return ErrKeySpaceNotFound
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
-	defer cancel()
-
-	return group.Remove(ctx, key)
-}
-
-// DeleteMany removes multiple key/value pairs from the cache.
-//
-// Parameters:
-//   - ctx: The context for cancellation and deadlines.
-//   - keyspace: The keyspace from which to delete the key/value pairs.
-//   - keys: A slice of keys identifying the key/value pairs to be deleted.
-//
-// Returns an error if the operation fails.
-func (x *engine) DeleteMany(ctx context.Context, keyspace string, keys []string) error {
-	x.lock.Lock()
-	defer x.lock.Unlock()
-
-	group, ok := x.groups.Get(keyspace)
-	if !ok {
-		return ErrKeySpaceNotFound
-	}
-
-	for _, key := range keys {
-		ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
-		if err := group.Remove(ctx, key); err != nil {
-			cancel()
-			return err
-		}
-		cancel()
-	}
-	return nil
-}
-
-// KeySpaces returns the list of available KeySpaces from the cache.
-//
-// Returns an empty list if there are no keyspaces
-func (x *engine) KeySpaces() []string {
-	x.lock.Lock()
-	defer x.lock.Unlock()
-	return x.groups.Keys()
-}
-
-// DeleteKeySpace delete a given keySpace from the cache.
-//
-// Parameters:
-//   - ctx: The context for cancellation and deadlines.
-//   - keyspace: The keyspace from which to delete the key/value pairs.
-//
-// Returns an error if the operation fails.
-func (x *engine) DeleteKeySpace(ctx context.Context, keyspace string) error {
-	x.lock.Lock()
-	defer x.lock.Unlock()
-
-	group, ok := x.groups.Get(keyspace)
-	if !ok {
-		return ErrKeySpaceNotFound
-	}
-
-	_, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
-	defer cancel()
-
-	x.daemon.RemoveGroup(group.Name())
-	x.groups.Delete(keyspace)
-	return nil
-}
-
-// DeleteKeyspaces removes multiple keyspaces from the cache.
-//
-// Parameters:
-//   - ctx: The context for cancellation and deadlines.
-//   - keyspaces: A slice of keyspaces to be deleted.
-//
-// Returns an error if the operation fails.
-func (x *engine) DeleteKeyspaces(ctx context.Context, keyspaces []string) error {
-	x.lock.Lock()
-	defer x.lock.Unlock()
-
-	_, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
-	defer cancel()
-
-	for _, keyspace := range keyspaces {
-		if group, ok := x.groups.Get(keyspace); ok {
-			x.daemon.RemoveGroup(group.Name())
-			x.groups.Delete(keyspace)
-		}
-	}
-	return nil
 }
 
 // peers returns a channel containing the list of peers at a given time
