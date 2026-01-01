@@ -20,19 +20,49 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package distcache
+package admin
 
-import "errors"
+import (
+	"crypto/tls"
+	"strings"
+	"time"
+)
 
-// ErrClusterQuorum means that the cluster could not reach a healthy numbers of members to operate.
-var ErrClusterQuorum = errors.New("cannot be reached cluster quorum to operate")
+// Config configures the diagnostic HTTP server.
+type Config struct {
+	// ListenAddr specifies the address to bind for diagnostics.
+	ListenAddr string
+	// BasePath is the URL prefix for diagnostic endpoints.
+	BasePath string
+	// ReadTimeout bounds the maximum time to read request data.
+	ReadTimeout time.Duration
+	// WriteTimeout bounds the maximum time to write responses.
+	WriteTimeout time.Duration
+	// IdleTimeout is the maximum amount of time to wait for the next request.
+	IdleTimeout time.Duration
+	// TLSConfig enables HTTPS when non-nil.
+	TLSConfig *tls.Config
+}
 
-// ErrKeySpaceNotFound means that distributed cache does not have the given keyspace requested
-var ErrKeySpaceNotFound = errors.New("key space not found")
+// Normalize returns a configuration with defaults applied.
+func (c Config) Normalize() Config {
+	config := c
+	if config.BasePath == "" {
+		config.BasePath = defaultAdminBasePath
+	}
 
-// ErrDataSourceRateLimited indicates that a data source request exceeded
-// the configured rate limit.
-var ErrDataSourceRateLimited = errors.New("data source rate limit exceeded")
+	config.BasePath = "/" + strings.Trim(config.BasePath, "/")
+	if config.ReadTimeout <= 0 {
+		config.ReadTimeout = 5 * time.Second
+	}
 
-// ErrDataSourceCircuitOpen indicates that the data source circuit breaker is open.
-var ErrDataSourceCircuitOpen = errors.New("data source circuit breaker open")
+	if config.WriteTimeout <= 0 {
+		config.WriteTimeout = 10 * time.Second
+	}
+
+	if config.IdleTimeout <= 0 {
+		config.IdleTimeout = 30 * time.Second
+	}
+
+	return config
+}

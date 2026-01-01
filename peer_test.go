@@ -22,17 +22,14 @@
 
 package distcache
 
-import "errors"
+import (
+	"testing"
 
-// ErrClusterQuorum means that the cluster could not reach a healthy numbers of members to operate.
-var ErrClusterQuorum = errors.New("cannot be reached cluster quorum to operate")
+	"github.com/stretchr/testify/require"
+)
 
-// ErrKeySpaceNotFound means that distributed cache does not have the given keyspace requested
-var ErrKeySpaceNotFound = errors.New("key space not found")
+func TestPeerAddress(t *testing.T) {
+	p := Peer{BindAddr: "127.0.0.1", BindPort: 8080}
+	require.Equal(t, "127.0.0.1:8080", p.Address())
+}
 
-// ErrDataSourceRateLimited indicates that a data source request exceeded
-// the configured rate limit.
-var ErrDataSourceRateLimited = errors.New("data source rate limit exceeded")
-
-// ErrDataSourceCircuitOpen indicates that the data source circuit breaker is open.
-var ErrDataSourceCircuitOpen = errors.New("data source circuit breaker open")

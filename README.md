@@ -26,31 +26,46 @@ The caching engine is powered by the battle‑tested [groupcache-go](https://git
 - [Features](#-features)
 - [Installation](#-installation)
 - [Engine](#-engine)
+  - [Batch Semantics](#-batch-semantics)
+- [Observability](#-observability)
+- [Admin & Diagnostics](#-admin--diagnostics)
+  - [Example Requests](#-example-requests)
+- [Warmup & Hot Keys](#-warmup--hot-keys)
+  - [Behavior](#-behavior)
+- [DataSource Protection](#-datasource-protection)
+  - [Error Semantics](#-error-semantics)
+- [KeySpace Defaults & Overrides](#-keyspace-defaults--overrides)
+  - [Precedence](#-precedence)
 - [How It Works](#-how-it-works)
 - [Use Cases](#-use-cases)
 - [Get Started](#-get-started)
+  - [Quick Start](#-quick-start)
+  - [Configuration Highlights](#-configuration-highlights)
   - [DataSource](#datasource)
   - [KeySpace](#keyspace)
+- [Production Notes](#-production-notes)
 - [Example](#example)
 - [Contribution](#-contribution)
 
-## ⭐️ Features
+## ✨ Features
 
-- **Automatic fetch on miss** – Data is loaded into the cache only when requested.
-- **Distributed architecture** – Data is sharded across nodes for scalability and availability.
-- **Reduced backend load** – Frequent reads are served from the cache instead of the database.
-- **Configurable expiry & eviction** – Support for TTL, LRU, and custom policies.
-- **Automatic node discovery** – Nodes automatically react to cluster topology changes.
-- **Discovery provider** – Implement custom discovery backends or use the built‑in ones:
+- ⚡️ **Automatic fetch on miss** – Data is loaded into the cache only when requested.
+- 🌍 **Distributed architecture** – Data is sharded across nodes for scalability and availability.
+- 🧠 **Reduced backend load** – Frequent reads are served from the cache instead of the database.
+- ⏳ **Configurable expiry & eviction** – Support for TTL, LRU, and custom policies.
+- 🧭 **Automatic node discovery** – Nodes automatically react to cluster topology changes.
+- 🧩 **KeySpace overrides** – Per‑keyspace TTL, timeouts, max bytes, warm keys, and protections.
+- 🔁 **Dynamic keyspace updates** – Replace keyspaces at runtime via `UpdateKeySpace`.
+- 🔥 **Warmup & hot key tracking** – Prefetch hot keys on join/leave events.
+- 🛡️ **DataSource protection** – Rate limiting and circuit breaking, globally or per keyspace.
+- 🧭 **Admin diagnostics** – JSON endpoints for peers and keyspace stats.
+- 📈 **Observability** – OpenTelemetry metrics and tracing around engine operations.
+- 🔐 **TLS support** – End‑to‑end encrypted communication between nodes.
+- 🧰 **Discovery provider** – Implement custom discovery backends or use the built‑in ones:
   - [Kubernetes](./discovery/kubernetes/README.md) – discover peers via the Kubernetes API.
   - [NATS](./discovery/nats/README.md) – discover peers via [NATS](https://github.com/nats-io/nats.go).
   - [Static](./discovery/static/README.md) – fixed list of peers, ideal for tests and demos.
   - [DNS](./discovery/dnssd/README.md) – discover peers via Go’s DNS resolver.
-- **TLS support** – End‑to‑end encrypted communication between nodes. All nodes must share the same root
-  Certificate Authority (CA) for a successful handshake. TLS is enabled via the [`WithTLS`](./option.go) option
-  in the configuration and applies to both client and server sides.
-- **Instrumentation** - Support for metrics and tracing via [OpenTelemetry](https://opentelemetry.io/docs/languages/go/getting-started/). That can be enabled using the
-  [`WithMetrics`](./option.go) and [`WithTracing`](./option.go) options in the configuration.
 
 ## 💻 Installation
 
@@ -68,6 +83,7 @@ interacting with the cache.
 - **Put** – Store a single key/value pair in a given keyspace.
 - **PutMany** – Store multiple key/value pairs in a given keyspace.
 - **Get** – Retrieve a specific key/value pair from a given keyspace.
+- **GetMany** – Retrieve multiple key/value pairs in a given keyspace.
 - **Delete** – Remove a specific key/value pair from a given keyspace.
 - **DeleteMany** – Remove multiple key/value pairs from a given keyspace.
 
@@ -75,10 +91,157 @@ interacting with the cache.
 
 - **DeleteKeySpace** – Delete a single keyspace and all of its entries.
 - **DeleteKeyspaces** – Delete multiple keyspaces at once.
+- **UpdateKeySpace** – Replace a keyspace definition at runtime (recreates the group and can trigger warmup).
 - **KeySpaces** – List all available keyspaces.
 
 The Engine is designed to provide high‑performance operations across a distributed cluster while keeping the API
 simple and predictable.
+
+### 📦 Batch Semantics
+
+- **GetMany** – Returns values in the same order as the input keys and fails fast on the first error.
+- **DeleteMany** – Issues a single RemoveKeys call for the provided keys and returns any error from that call.
+
+## 📈 Observability
+
+DistCache ships with OpenTelemetry instrumentation for engine operations:
+
+- **Metrics** – Counters and latency histograms for `Put`, `Get`, `Delete`, `GetMany`, `DeleteMany`, etc.
+- **Tracing** – Spans tagged with `distcache.operation` and `distcache.keyspace`.
+
+Enable it using `WithMetrics` and `WithTracing` in your [`Config`](./config.go).
+
+## 🧭 Admin & Diagnostics
+
+DistCache exposes lightweight HTTP endpoints for diagnostics and operational visibility.
+
+- **Default base path**: `/_distcache/admin`
+- **Endpoints**:
+  - `GET /peers` – returns cluster peers.
+  - `GET /keyspaces` – returns keyspace snapshots, cache sizes, and optional stats.
+
+Enable the admin server with:
+
+```go
+cfg := distcache.NewConfig(
+    provider,
+    keyspaces,
+    distcache.WithAdminServer("127.0.0.1:9090"),
+    // or
+    distcache.WithAdminConfig(admin.Config{
+        ListenAddr: "127.0.0.1:9090",
+        BasePath:   "/_distcache/admin",
+    }),
+)
+```
+
+Use `admin.Config` from the `github.com/tochemey/distcache/admin` package for advanced settings.
+
+Keyspace stats include cache hits, loads, peer errors, and remove‑key counters when supported by the underlying
+group implementation.
+
+### 📎 Example Requests
+
+```bash
+curl -s http://127.0.0.1:9090/_distcache/admin/peers
+curl -s http://127.0.0.1:9090/_distcache/admin/keyspaces
+```
+
+Example response:
+
+```json
+[
+  {
+    "name": "users",
+    "max_bytes": 67108864,
+    "default_ttl": "5m0s",
+    "read_timeout": "250ms",
+    "write_timeout": "500ms",
+    "warm_keys": ["user:1", "user:2"],
+    "main_cache_bytes": 2048,
+    "hot_cache_bytes": 256,
+    "stats": {
+      "gets": 120,
+      "cache_hits": 98,
+      "peer_loads": 5,
+      "peer_errors": 0,
+      "loads": 22,
+      "loads_deduped": 7,
+      "local_loads": 17,
+      "local_load_errs": 0,
+      "remove_keys_requests": 1,
+      "removed_keys": 3
+    }
+  }
+]
+```
+
+## 🔥 Warmup & Hot Keys
+
+Warmup prefetches hot keys when the cluster topology changes (join/leave). DistCache tracks hot keys during reads
+and combines them with explicit warm keys configured per keyspace.
+
+Enable warmup with the `warmup` package:
+
+```go
+cfg := distcache.NewConfig(
+    provider,
+    keyspaces,
+    distcache.WithWarmup(warmup.Config{
+        MaxHotKeys:  100,
+        MinHits:     1,
+        Concurrency: 4,
+        Timeout:     2 * time.Second,
+        WarmOnJoin:  true,
+        WarmOnLeave: true,
+    }),
+)
+```
+
+The warmup configuration lives in `github.com/tochemey/distcache/warmup`.
+
+### 🧯 Behavior
+
+- Warmup triggers on cluster **join** and/or **leave** events (configurable).
+- Prefetch keys include **explicit warm keys** plus **hot keys** observed at runtime.
+- Prefetch concurrency is bounded by the warmup config.
+- Each prefetch uses the smaller of the warmup timeout and the keyspace read timeout.
+
+## 🛡️ DataSource Protection
+
+Protect upstream dependencies with rate limiting and circuit breaking:
+
+- **Engine‑level** – `WithRateLimiter`, `WithCircuitBreaker`
+- **Per‑keyspace overrides** – `WithKeySpaceRateLimiter`, `WithKeySpaceCircuitBreaker`
+
+These protections guard `DataSource.Fetch` calls and reduce load during spikes or outages.
+
+### ⚠️ Error Semantics
+
+- **`WaitTimeout == 0`** → immediate allow/deny; denied requests return `ErrDataSourceRateLimited`.
+- **`WaitTimeout > 0`** → waits up to the timeout; if exceeded, you may see `context.DeadlineExceeded`.
+- **Circuit breaker open** → returns `ErrDataSourceCircuitOpen`.
+
+## 🎛️ KeySpace Defaults & Overrides
+
+KeySpaces can override engine defaults without changing the `KeySpace` implementation:
+
+- `WithKeySpaceMaxBytes`
+- `WithKeySpaceDefaultTTL`
+- `WithKeySpaceReadTimeout`
+- `WithKeySpaceWriteTimeout`
+- `WithKeySpaceWarmKeys`
+- `WithKeySpaceRateLimiter`
+- `WithKeySpaceCircuitBreaker`
+
+Overrides are validated at startup to catch invalid TTLs, timeouts, or limits early.
+
+### 🧭 Precedence
+
+- **MaxBytes**: `WithKeySpaceMaxBytes` overrides `KeySpace.MaxBytes`.
+- **Read/Write timeouts**: keyspace overrides take precedence; otherwise engine defaults.
+- **Default TTL**: applied only when `KeySpace.ExpiresAt` returns zero.
+- **DataSource protection**: keyspace rate limiter / circuit breaker override engine-level settings.
 
 ## 📝 How It Works
 
@@ -102,6 +265,91 @@ simple and predictable.
 To integrate DistCache, configure a [`Config`](./config.go) and implement **two interfaces** before starting the
 [Engine](./engine.go):
 
+### 🚀 Quick Start
+
+```go
+package main
+
+import (
+	"context"
+	"time"
+
+	"github.com/tochemey/distcache"
+	"github.com/tochemey/distcache/admin"
+	"github.com/tochemey/distcache/discovery/static"
+	"github.com/tochemey/distcache/warmup"
+)
+
+type userSource struct{}
+
+func (userSource) Fetch(_ context.Context, _ string) ([]byte, error) {
+	return []byte("ok"), nil
+}
+
+type userKeySpace struct {
+	source distcache.DataSource
+}
+
+func (k userKeySpace) Name() string                                 { return "users" }
+func (k userKeySpace) MaxBytes() int64                               { return 64 << 20 }
+func (k userKeySpace) DataSource() distcache.DataSource             { return k.source }
+func (k userKeySpace) ExpiresAt(context.Context, string) time.Time  { return time.Time{} }
+
+func main() {
+	provider := static.NewDiscovery(&static.Config{
+		Addresses: []string{"127.0.0.1:3320"},
+	})
+
+	cfg := distcache.NewConfig(
+		provider,
+		[]distcache.KeySpace{userKeySpace{source: userSource{}}},
+		distcache.WithAdminConfig(admin.Config{ListenAddr: "127.0.0.1:9090"}),
+		distcache.WithWarmup(warmup.Config{WarmOnJoin: true, WarmOnLeave: true}),
+	)
+
+	engine, err := distcache.NewEngine(cfg)
+	if err != nil {
+		panic(err)
+	}
+
+	ctx := context.Background()
+	if err := engine.Start(ctx); err != nil {
+		panic(err)
+	}
+	defer engine.Stop(ctx)
+}
+```
+
+### ⚙️ Configuration Highlights
+
+```go
+cfg := distcache.NewConfig(
+    provider,
+    []distcache.KeySpace{usersKeySpace, sessionsKeySpace},
+    distcache.WithAdminServer("0.0.0.0:9090"),
+    distcache.WithWarmup(warmup.Config{
+        MaxHotKeys:  200,
+        MinHits:     3,
+        Concurrency: 8,
+        Timeout:     500 * time.Millisecond,
+        WarmOnJoin:  true,
+        WarmOnLeave: true,
+    }),
+    distcache.WithRateLimiter(distcache.RateLimitConfig{
+        RequestsPerSecond: 100,
+        Burst:             200,
+        WaitTimeout:       50 * time.Millisecond,
+    }),
+    distcache.WithCircuitBreaker(distcache.CircuitBreakerConfig{
+        FailureThreshold: 5,
+        ResetTimeout:     10 * time.Second,
+    }),
+    distcache.WithKeySpaceDefaultTTL("users", 5*time.Minute),
+    distcache.WithKeySpaceReadTimeout("users", 250*time.Millisecond),
+    distcache.WithKeySpaceWarmKeys("users", []string{"user:1", "user:2"}),
+)
+```
+
 - [`DataSource`](./datasource.go): Defines how to fetch data on a cache miss. This can be a database, REST API, gRPC service, filesystem, or any
   other backend.
 - [`KeySpace`](./keyspace.go): Defines a logical namespace for grouping key/value pairs. It controls metadata such as:
@@ -110,6 +358,16 @@ To integrate DistCache, configure a [`Config`](./config.go) and implement **two 
   - Expiration and eviction behavior
 
 KeySpaces are loaded during DistCache bootstrap and dictate how data is partitioned and managed in the cluster.
+
+## 🧰 Production Notes
+
+- **Bootstrap and discovery** – Set `BootstrapTimeout`, `JoinRetryInterval`, and `MinimumPeersQuorum` to match your
+  environment and discovery backend behavior.
+- **Admin endpoints** – Protect diagnostics endpoints behind network ACLs or a reverse proxy.
+- **Timeouts** – Keep read/write timeouts and `DataSource` timeouts aligned to avoid cascading delays.
+- **Warmup tuning** – Tune `Concurrency` and `Timeout` to avoid flooding upstreams during topology changes.
+- **Rate limiting** – Use `WaitTimeout` to bound latency; `0` means immediate deny when tokens are exhausted.
+- **Dynamic updates** – `UpdateKeySpace` recreates the underlying group; consider warmup to rehydrate hot keys.
 
 ## Example
 

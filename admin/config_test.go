@@ -20,19 +20,32 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package distcache
+package admin
 
-import "errors"
+import (
+	"context"
+	"testing"
+	"time"
 
-// ErrClusterQuorum means that the cluster could not reach a healthy numbers of members to operate.
-var ErrClusterQuorum = errors.New("cannot be reached cluster quorum to operate")
+	"github.com/stretchr/testify/require"
+)
 
-// ErrKeySpaceNotFound means that distributed cache does not have the given keyspace requested
-var ErrKeySpaceNotFound = errors.New("key space not found")
+func TestConfigNormalize(t *testing.T) {
+	cfg := Config{
+		BasePath: "/admin/",
+	}
 
-// ErrDataSourceRateLimited indicates that a data source request exceeded
-// the configured rate limit.
-var ErrDataSourceRateLimited = errors.New("data source rate limit exceeded")
+	normalized := cfg.Normalize()
+	require.Equal(t, "/admin", normalized.BasePath)
+	require.Equal(t, 5*time.Second, normalized.ReadTimeout)
+	require.Equal(t, 10*time.Second, normalized.WriteTimeout)
+	require.Equal(t, 30*time.Second, normalized.IdleTimeout)
+}
 
-// ErrDataSourceCircuitOpen indicates that the data source circuit breaker is open.
-var ErrDataSourceCircuitOpen = errors.New("data source circuit breaker open")
+func TestServerNoListenAddr(t *testing.T) {
+	server := NewServer(Config{}, nil, nil)
+
+	err := server.Start(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, server.Shutdown(context.Background()))
+}

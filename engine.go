@@ -42,10 +42,12 @@ import (
 	"github.com/groupcache/groupcache-go/v3/transport/peer"
 	"github.com/hashicorp/memberlist"
 
+	"github.com/tochemey/distcache/admin"
 	"github.com/tochemey/distcache/internal/errorschain"
 	"github.com/tochemey/distcache/internal/members"
 	"github.com/tochemey/distcache/internal/syncmap"
 	"github.com/tochemey/distcache/internal/tcp"
+	"github.com/tochemey/distcache/warmup"
 )
 
 // Engine defines a set of operations for managing key/value pairs in a cache or store,
@@ -93,6 +95,17 @@ type Engine interface {
 	//
 	// Returns the key/value pair if found, or an error if the operation fails or the key does not exist.
 	Get(ctx context.Context, keyspace string, key string) (*KV, error)
+
+	// GetMany retrieves multiple key/value pairs from the cache.
+	//
+	// Parameters:
+	//   - ctx: The context for cancellation and deadlines.
+	//   - keyspace: The keyspace from which to retrieve the key/value pairs.
+	//   - keys: A slice of keys identifying the desired key/value pairs.
+	//
+	// Returns a slice of key/value pairs in the same order as keys, or an error
+	// if any key retrieval fails.
+	GetMany(ctx context.Context, keyspace string, keys []string) ([]*KV, error)
 
 	// Delete removes a specific key/value pair from the cache.
 	//
@@ -157,6 +170,18 @@ type Engine interface {
 	// Returns an error if the operation fails.
 	DeleteKeyspaces(ctx context.Context, keyspaces []string) error
 
+	// UpdateKeySpace replaces a keyspace definition at runtime.
+	//
+	// This operation recreates the underlying cache group using the new
+	// keyspace settings (max bytes, TTL policy, and data source).
+	//
+	// Parameters:
+	//   - ctx: The context for cancellation and deadlines.
+	//   - keyspace: The updated keyspace definition.
+	//
+	// Returns an error if the keyspace does not exist or the update fails.
+	UpdateKeySpace(ctx context.Context, keyspace KeySpace) error
+
 	// KeySpaces returns the list of available KeySpaces from the cache.
 	//
 	// Returns an empty list if there are no keyspaces
@@ -174,6 +199,11 @@ type engine struct {
 	lock                  sync.Mutex
 	daemon                daemonAPI
 	groups                *syncmap.Map[string, transport.Group]
+	keySpaces             *syncmap.Map[string, *keySpaceWrapper]
+	instrumentation       *instrumentation
+	admin                 *admin.Server
+	hotKeys               *warmup.Tracker
+	warmupConfig          *warmup.Config
 	newTransportFunc      func(members.TransportConfig) (memberlist.Transport, error)
 	createMemberlistFunc  func(*memberlist.Config) (memberlistAPI, error)
 	listenAndServeFunc    func(context.Context, string, groupcache.Options) (daemonAPI, error)
@@ -233,11 +263,25 @@ func NewEngine(config *Config) (Engine, error) {
 		IsSelf:        true,
 	}
 
-	return &engine{
+	keySpaces := syncmap.New[string, *keySpaceWrapper]()
+	for _, keySpace := range config.KeySpaces() {
+		spec, err := newKeySpaceWrapper(config, keySpace)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := keySpaces.Get(keySpace.Name()); exists {
+			return nil, fmt.Errorf("duplicate keyspace: %s", keySpace.Name())
+		}
+		keySpaces.Set(keySpace.Name(), spec)
+	}
+
+	eng := &engine{
 		config:                config,
 		hostNode:              hostNode,
 		stopEventsListenerSig: make(chan struct{}, 1),
 		groups:                syncmap.New[string, transport.Group](),
+		keySpaces:             keySpaces,
+		instrumentation:       newInstrumentation(config),
 		newTransportFunc: func(cfg members.TransportConfig) (memberlist.Transport, error) {
 			return members.NewTransport(cfg)
 		},
@@ -247,7 +291,18 @@ func NewEngine(config *Config) (Engine, error) {
 		listenAndServeFunc: func(ctx context.Context, address string, opts groupcache.Options) (daemonAPI, error) {
 			return groupcache.ListenAndServe(ctx, address, opts)
 		},
-	}, nil
+	}
+
+	if cfg := config.AdminConfig(); cfg != nil {
+		eng.admin = admin.NewServer(*cfg, newAdminProvider(eng), config.Logger())
+	}
+	if cfg := config.WarmupConfig(); cfg != nil {
+		normalized := cfg.Normalize()
+		eng.warmupConfig = &normalized
+		eng.hotKeys = warmup.NewTracker(normalized.MaxHotKeys)
+	}
+
+	return eng, nil
 }
 
 // Start initializes and runs the distributed cache engine.
@@ -297,6 +352,13 @@ func (x *engine) Start(ctx context.Context) (err error) {
 		return err
 	}
 
+	if x.admin != nil {
+		if err := x.admin.Start(ctx); err != nil {
+			x.lock.Unlock()
+			return err
+		}
+	}
+
 	eventsCh := x.configureEventDelegate()
 	x.started.Store(true)
 	x.lock.Unlock()
@@ -330,14 +392,19 @@ func (x *engine) Stop(ctx context.Context) error { // nolint
 	close(x.stopEventsListenerSig)
 
 	provider := x.config.DiscoveryProvider()
-	if err := errorschain.
+	chain := errorschain.
 		New(errorschain.WithFailFast()).
 		AddRunner(func() error { return x.mlist.Leave(x.config.ShutdownTimeout()) }).
 		AddRunner(provider.Deregister).
 		AddRunner(provider.Close).
 		AddRunner(x.mlist.Shutdown).
-		AddContextRunner(x.daemon.Shutdown).
-		Run(); err != nil {
+		AddContextRunner(x.daemon.Shutdown)
+
+	if x.admin != nil {
+		chain = chain.AddContextRunner(x.admin.Shutdown)
+	}
+
+	if err := chain.Run(); err != nil {
 		return err
 	}
 
@@ -354,7 +421,10 @@ func (x *engine) Stop(ctx context.Context) error { // nolint
 //     If Expiry is set to the zero value (time.Time{}), the entry does not expire.
 //
 // Returns an error if the operation fails.
-func (x *engine) Put(ctx context.Context, keyspace string, entry *Entry) error {
+func (x *engine) Put(ctx context.Context, keyspace string, entry *Entry) (err error) {
+	ctx, end := x.instrumentation.start(ctx, "put", keyspace)
+	defer func() { end(err) }()
+
 	x.lock.Lock()
 	defer x.lock.Unlock()
 
@@ -362,11 +432,20 @@ func (x *engine) Put(ctx context.Context, keyspace string, entry *Entry) error {
 	if !ok {
 		return ErrKeySpaceNotFound
 	}
+	spec, ok := x.keySpaces.Get(keyspace)
+	if !ok {
+		return ErrKeySpaceNotFound
+	}
 
-	ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
+	expiry := entry.Expiry
+	if expiry.IsZero() && spec.config.DefaultTTL > 0 {
+		expiry = time.Now().Add(spec.config.DefaultTTL)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, x.writeTimeout(spec))
 	defer cancel()
 
-	return group.Set(ctx, entry.Key, entry.Value, entry.Expiry, true)
+	return group.Set(ctx, entry.Key, entry.Value, expiry, true)
 }
 
 // PutMany stores multiple key/value pairs in the cache.
@@ -377,7 +456,10 @@ func (x *engine) Put(ctx context.Context, keyspace string, entry *Entry) error {
 //   - kvs: A slice of key/value pairs to store.
 //
 // Returns an error if the operation fails.
-func (x *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry) error {
+func (x *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry) (err error) {
+	ctx, end := x.instrumentation.start(ctx, "put_many", keyspace)
+	defer func() { end(err) }()
+
 	x.lock.Lock()
 	defer x.lock.Unlock()
 
@@ -385,10 +467,19 @@ func (x *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry)
 	if !ok {
 		return ErrKeySpaceNotFound
 	}
+	spec, ok := x.keySpaces.Get(keyspace)
+	if !ok {
+		return ErrKeySpaceNotFound
+	}
 
 	for _, entry := range entries {
-		ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
-		if err := group.Set(ctx, entry.Key, entry.Value, entry.Expiry, true); err != nil {
+		expiry := entry.Expiry
+		if expiry.IsZero() && spec.config.DefaultTTL > 0 {
+			expiry = time.Now().Add(spec.config.DefaultTTL)
+		}
+
+		opCtx, cancel := context.WithTimeout(ctx, x.writeTimeout(spec))
+		if err := group.Set(opCtx, entry.Key, entry.Value, expiry, true); err != nil {
 			cancel()
 			return err
 		}
@@ -406,7 +497,10 @@ func (x *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry)
 //   - key: The key identifying the desired key/value pair.
 //
 // Returns the key/value pair if found, or an error if the operation fails or the key does not exist.
-func (x *engine) Get(ctx context.Context, keyspace string, key string) (*KV, error) {
+func (x *engine) Get(ctx context.Context, keyspace string, key string) (kv *KV, err error) {
+	ctx, end := x.instrumentation.start(ctx, "get", keyspace)
+	defer func() { end(err) }()
+
 	x.lock.Lock()
 	defer x.lock.Unlock()
 
@@ -414,8 +508,12 @@ func (x *engine) Get(ctx context.Context, keyspace string, key string) (*KV, err
 	if !ok {
 		return nil, ErrKeySpaceNotFound
 	}
+	spec, ok := x.keySpaces.Get(keyspace)
+	if !ok {
+		return nil, ErrKeySpaceNotFound
+	}
 
-	ctx, cancel := context.WithTimeout(ctx, x.config.ReadTimeout())
+	ctx, cancel := context.WithTimeout(ctx, x.readTimeout(spec))
 	defer cancel()
 
 	var value []byte
@@ -423,10 +521,59 @@ func (x *engine) Get(ctx context.Context, keyspace string, key string) (*KV, err
 		return nil, err
 	}
 
+	if x.hotKeys != nil {
+		x.hotKeys.Record(keyspace, key)
+	}
+
 	return &KV{
 		Key:   key,
 		Value: value,
 	}, nil
+}
+
+// GetMany retrieves multiple key/value pairs from the cache.
+//
+// Parameters:
+//   - ctx: The context for cancellation and deadlines.
+//   - keyspace: The keyspace from which to retrieve the key/value pairs.
+//   - keys: A slice of keys identifying the desired key/value pairs.
+//
+// Returns a slice of key/value pairs in the same order as keys, or an error
+// if any key retrieval fails.
+func (x *engine) GetMany(ctx context.Context, keyspace string, keys []string) (kvs []*KV, err error) {
+	ctx, end := x.instrumentation.start(ctx, "get_many", keyspace)
+	defer func() { end(err) }()
+
+	x.lock.Lock()
+	defer x.lock.Unlock()
+
+	group, ok := x.groups.Get(keyspace)
+	if !ok {
+		return nil, ErrKeySpaceNotFound
+	}
+	spec, ok := x.keySpaces.Get(keyspace)
+	if !ok {
+		return nil, ErrKeySpaceNotFound
+	}
+
+	kvs = make([]*KV, 0, len(keys))
+	for _, key := range keys {
+		opCtx, cancel := context.WithTimeout(ctx, x.readTimeout(spec))
+		var value []byte
+		if err := group.Get(opCtx, key, transport.AllocatingByteSliceSink(&value)); err != nil {
+			cancel()
+			return nil, err
+		}
+		cancel()
+
+		if x.hotKeys != nil {
+			x.hotKeys.Record(keyspace, key)
+		}
+
+		kvs = append(kvs, &KV{Key: key, Value: value})
+	}
+
+	return kvs, nil
 }
 
 // Delete removes a specific key/value pair from the cache.
@@ -437,7 +584,10 @@ func (x *engine) Get(ctx context.Context, keyspace string, key string) (*KV, err
 //   - key: The key identifying the key/value pair to be deleted.
 //
 // Returns an error if the operation fails.
-func (x *engine) Delete(ctx context.Context, keyspace string, key string) error {
+func (x *engine) Delete(ctx context.Context, keyspace string, key string) (err error) {
+	ctx, end := x.instrumentation.start(ctx, "delete", keyspace)
+	defer func() { end(err) }()
+
 	x.lock.Lock()
 	defer x.lock.Unlock()
 
@@ -445,8 +595,12 @@ func (x *engine) Delete(ctx context.Context, keyspace string, key string) error 
 	if !ok {
 		return ErrKeySpaceNotFound
 	}
+	spec, ok := x.keySpaces.Get(keyspace)
+	if !ok {
+		return ErrKeySpaceNotFound
+	}
 
-	ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
+	ctx, cancel := context.WithTimeout(ctx, x.writeTimeout(spec))
 	defer cancel()
 
 	return group.Remove(ctx, key)
@@ -460,7 +614,10 @@ func (x *engine) Delete(ctx context.Context, keyspace string, key string) error 
 //   - keys: A slice of keys identifying the key/value pairs to be deleted.
 //
 // Returns an error if the operation fails.
-func (x *engine) DeleteMany(ctx context.Context, keyspace string, keys []string) error {
+func (x *engine) DeleteMany(ctx context.Context, keyspace string, keys []string) (err error) {
+	ctx, end := x.instrumentation.start(ctx, "delete_many", keyspace)
+	defer func() { end(err) }()
+
 	x.lock.Lock()
 	defer x.lock.Unlock()
 
@@ -468,8 +625,12 @@ func (x *engine) DeleteMany(ctx context.Context, keyspace string, keys []string)
 	if !ok {
 		return ErrKeySpaceNotFound
 	}
+	spec, ok := x.keySpaces.Get(keyspace)
+	if !ok {
+		return ErrKeySpaceNotFound
+	}
 
-	ctx, cancel := context.WithTimeout(ctx, x.config.WriteTimeout())
+	ctx, cancel := context.WithTimeout(ctx, x.writeTimeout(spec))
 	defer cancel()
 
 	return group.RemoveKeys(ctx, keys...)
@@ -481,7 +642,7 @@ func (x *engine) DeleteMany(ctx context.Context, keyspace string, keys []string)
 func (x *engine) KeySpaces() []string {
 	x.lock.Lock()
 	defer x.lock.Unlock()
-	return x.groups.Keys()
+	return x.keySpaces.Keys()
 }
 
 // DeleteKeySpace delete a given keySpace from the cache.
@@ -491,7 +652,10 @@ func (x *engine) KeySpaces() []string {
 //   - keyspace: The keyspace from which to delete the key/value pairs.
 //
 // Returns an error if the operation fails.
-func (x *engine) DeleteKeySpace(ctx context.Context, keyspace string) error {
+func (x *engine) DeleteKeySpace(ctx context.Context, keyspace string) (err error) {
+	ctx, end := x.instrumentation.start(ctx, "delete_keyspace", keyspace)
+	defer func() { end(err) }()
+
 	x.lock.Lock()
 	defer x.lock.Unlock()
 
@@ -505,6 +669,8 @@ func (x *engine) DeleteKeySpace(ctx context.Context, keyspace string) error {
 
 	x.daemon.RemoveGroup(group.Name())
 	x.groups.Delete(keyspace)
+	x.keySpaces.Delete(keyspace)
+	x.removeKeySpaceFromConfig(keyspace)
 	return nil
 }
 
@@ -515,7 +681,10 @@ func (x *engine) DeleteKeySpace(ctx context.Context, keyspace string) error {
 //   - keyspaces: A slice of keyspaces to be deleted.
 //
 // Returns an error if the operation fails.
-func (x *engine) DeleteKeyspaces(ctx context.Context, keyspaces []string) error {
+func (x *engine) DeleteKeyspaces(ctx context.Context, keyspaces []string) (err error) {
+	ctx, end := x.instrumentation.start(ctx, "delete_keyspaces", "")
+	defer func() { end(err) }()
+
 	x.lock.Lock()
 	defer x.lock.Unlock()
 
@@ -526,8 +695,56 @@ func (x *engine) DeleteKeyspaces(ctx context.Context, keyspaces []string) error 
 		if group, ok := x.groups.Get(keyspace); ok {
 			x.daemon.RemoveGroup(group.Name())
 			x.groups.Delete(keyspace)
+			x.keySpaces.Delete(keyspace)
+			x.removeKeySpaceFromConfig(keyspace)
 		}
 	}
+	return nil
+}
+
+// UpdateKeySpace replaces a keyspace definition at runtime.
+//
+// This operation recreates the underlying cache group using the new keyspace
+// settings and triggers a warm-up when configured.
+func (x *engine) UpdateKeySpace(ctx context.Context, keyspace KeySpace) (err error) {
+	if keyspace == nil {
+		return fmt.Errorf("keyspace is nil")
+	}
+
+	_, end := x.instrumentation.start(ctx, "update_keyspace", keyspace.Name())
+	defer func() { end(err) }()
+
+	x.lock.Lock()
+	defer x.lock.Unlock()
+
+	if _, ok := x.groups.Get(keyspace.Name()); !ok {
+		return ErrKeySpaceNotFound
+	}
+
+	spec, err := newKeySpaceWrapper(x.config, keyspace)
+	if err != nil {
+		return err
+	}
+
+	oldSpec, _ := x.keySpaces.Get(keyspace.Name())
+	x.daemon.RemoveGroup(keyspace.Name())
+
+	group, err := x.createGroup(spec)
+	if err != nil {
+		if oldSpec != nil {
+			if rollbackGroup, rollbackErr := x.createGroup(oldSpec); rollbackErr == nil {
+				x.groups.Set(rollbackGroup.Name(), rollbackGroup)
+			}
+		}
+		return err
+	}
+
+	x.groups.Set(group.Name(), group)
+	x.keySpaces.Set(keyspace.Name(), spec)
+	x.replaceKeySpaceInConfig(keyspace)
+
+	x.triggerWarmup(keyspace.Name(), spec)
+
 	return nil
 }
 
@@ -629,25 +846,24 @@ func (x *engine) applyPeers(ctx context.Context, peers []*Peer) error {
 }
 
 func (x *engine) createGroups() error {
-	keySpaces := x.config.KeySpaces()
-	for _, keySpace := range keySpaces {
-		group, err := x.daemon.NewGroup(keySpace.Name(), keySpace.MaxBytes(), groupcache.GetterFunc(
-			func(ctx context.Context, id string, dest transport.Sink) error {
-				bytea, err := keySpace.DataSource().Fetch(ctx, id)
-				if err != nil {
-					return err
-				}
-				expiredAt := keySpace.ExpiresAt(ctx, id)
-				return dest.SetBytes(bytea, expiredAt)
-			}))
-
-		if err != nil {
-			return fmt.Errorf("failed to create group: %w", err)
-		}
-
-		x.groups.Set(group.Name(), group)
+	if err := x.ensureKeySpaces(); err != nil {
+		return err
 	}
-	return nil
+
+	var createErr error
+	x.keySpaces.Range(func(_ string, spec *keySpaceWrapper) {
+		if createErr != nil {
+			return
+		}
+		group, err := x.createGroup(spec)
+		if err != nil {
+			createErr = err
+			return
+		}
+		x.groups.Set(group.Name(), group)
+	})
+
+	return createErr
 }
 
 func (x *engine) configureEventDelegate() chan memberlist.NodeEvent {
@@ -786,6 +1002,7 @@ func (x *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
 
 				_ = x.daemon.SetPeers(ctx, peersSet.ToSlice())
 				x.eventsLock.Unlock()
+				x.warmupOnClusterEvent(memberlist.NodeJoin)
 
 			case memberlist.NodeLeave:
 				x.config.Logger().Infof("Cache on host=%s has noticed node=%s has left the cluster", x.hostNode.Address(), node.Address())
@@ -799,6 +1016,7 @@ func (x *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
 				})
 				_ = x.daemon.SetPeers(ctx, peersSet.ToSlice())
 				x.eventsLock.Unlock()
+				x.warmupOnClusterEvent(memberlist.NodeLeave)
 
 			case memberlist.NodeUpdate:
 				x.eventsLock.Lock()
@@ -868,4 +1086,101 @@ func (x *engine) joinCluster(ctx context.Context) error {
 // computeTimeout calculates the approximate timeout given maxAttempts and retryInterval.
 func computeTimeout(maxAttempts int, retryInterval time.Duration) time.Duration {
 	return time.Duration(maxAttempts-1) * retryInterval
+}
+
+func (x *engine) warmupOnClusterEvent(event memberlist.NodeEventType) {
+	if x.warmupConfig == nil {
+		return
+	}
+
+	cfg := *x.warmupConfig
+	switch event {
+	case memberlist.NodeJoin:
+		if !cfg.WarmOnJoin {
+			return
+		}
+	case memberlist.NodeLeave:
+		if !cfg.WarmOnLeave {
+			return
+		}
+	}
+
+	go func() {
+		x.keySpaces.Range(func(name string, spec *keySpaceWrapper) {
+			x.triggerWarmup(name, spec)
+		})
+	}()
+}
+
+func (x *engine) triggerWarmup(keyspace string, spec *keySpaceWrapper) {
+	if x.warmupConfig == nil || spec == nil {
+		return
+	}
+
+	cfg := *x.warmupConfig
+	keys := x.collectWarmupKeys(keyspace, spec, cfg)
+	if len(keys) == 0 {
+		return
+	}
+
+	go x.prefetchKeys(keyspace, spec, keys, cfg)
+}
+
+func (x *engine) collectWarmupKeys(keyspace string, spec *keySpaceWrapper, cfg warmup.Config) []string {
+	keys := make(map[string]struct{})
+	for _, key := range spec.config.WarmKeys {
+		if key == "" {
+			continue
+		}
+		keys[key] = struct{}{}
+	}
+
+	if x.hotKeys != nil {
+		for _, key := range x.hotKeys.TopKeys(keyspace, cfg.MaxHotKeys, cfg.MinHits) {
+			keys[key] = struct{}{}
+		}
+	}
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	result := make([]string, 0, len(keys))
+	for key := range keys {
+		result = append(result, key)
+	}
+	return result
+}
+
+func (x *engine) prefetchKeys(keyspace string, spec *keySpaceWrapper, keys []string, cfg warmup.Config) {
+	group, ok := x.groups.Get(keyspace)
+	if !ok {
+		return
+	}
+
+	timeout := cfg.Timeout
+	if specTimeout := x.readTimeout(spec); specTimeout > 0 && specTimeout < timeout {
+		timeout = specTimeout
+	}
+
+	sem := make(chan struct{}, cfg.Concurrency)
+	var wg sync.WaitGroup
+
+	for _, key := range keys {
+		wg.Add(1)
+		sem <- struct{}{}
+
+		go func(k string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+
+			var value []byte
+			_ = group.Get(ctx, k, transport.AllocatingByteSliceSink(&value))
+		}(key)
+	}
+
+	wg.Wait()
 }
