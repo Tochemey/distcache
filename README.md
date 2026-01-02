@@ -27,7 +27,6 @@ The caching engine is powered by the battle‑tested [groupcache-go](https://git
 - [Installation](#installation)
 - [Engine](#engine)
   - [Core Methods](#core-methods)
-  - [Batch Semantics](#batch-semantics)
   - [KeySpace Management](#keyspace-management)
 - [Observability](#observability)
 - [Admin & Diagnostics](#-admin--diagnostics)
@@ -88,11 +87,6 @@ interacting with the cache.
 - **GetMany** – Retrieve multiple key/value pairs in a given keyspace.
 - **Delete** – Remove a specific key/value pair from a given keyspace.
 - **DeleteMany** – Remove multiple key/value pairs from a given keyspace.
-
-### Batch Semantics
-
-- **GetMany** – Returns values in the same order as the input keys and fails fast on the first error.
-- **DeleteMany** – Issues a single RemoveKeys call for the provided keys and returns any error from that call.
 
 ### KeySpace Management
 
