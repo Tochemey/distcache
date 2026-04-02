@@ -29,7 +29,7 @@ The caching engine is powered by the battle‑tested [groupcache-go](https://git
   - [Core Methods](#core-methods)
   - [KeySpace Management](#keyspace-management)
 - [Observability](#observability)
-- [Admin & Diagnostics](#-admin--diagnostics)
+- [Admin & Diagnostics](#admin--diagnostics)
 - [Example Requests](#example-requests)
 - [Warmup & Hot Keys](#warmup--hot-keys)
   - [Behavior](#behavior)
@@ -50,19 +50,19 @@ The caching engine is powered by the battle‑tested [groupcache-go](https://git
 
 ## Features
 
-- ⚡️ **Automatic fetch on miss** – Data is loaded into the cache only when requested.
-- 🌍 **Distributed architecture** – Data is sharded across nodes for scalability and availability.
-- 🧠 **Reduced backend load** – Frequent reads are served from the cache instead of the database.
-- ⏳ **Configurable expiry & eviction** – Support for TTL, LRU, and custom policies.
-- 🛰️ **Automatic node discovery** – Nodes automatically react to cluster topology changes.
-- 🧩 **KeySpace overrides** – Per‑keyspace TTL, timeouts, max bytes, warm keys, and protections.
-- 🔁 **Dynamic keyspace updates** – Replace keyspaces at runtime via `UpdateKeySpace`.
-- 🌶️ **Warmup & hot key tracking** – Prefetch hot keys on join/leave events.
-- 🧯 **DataSource protection** – Rate limiting and circuit breaking, globally or per keyspace.
-- 🧪 **Admin diagnostics** – JSON endpoints for peers and keyspace stats.
-- 📈 **Observability** – OpenTelemetry metrics and tracing around engine operations.
-- 🔐 **TLS support** – End‑to‑end encrypted communication between nodes.
-- 🧰 **Discovery provider** – Implement custom discovery backends or use the built‑in ones:
+- **Automatic fetch on miss** – Data is loaded into the cache only when requested.
+- **Distributed architecture** – Data is sharded across nodes for scalability and availability.
+- **Reduced backend load** – Frequent reads are served from the cache instead of the database.
+- **Configurable expiry & eviction** – Support for TTL, LRU, and custom policies.
+- **Automatic node discovery** – Nodes automatically react to cluster topology changes.
+- **KeySpace overrides** – Per‑keyspace TTL, timeouts, max bytes, warm keys, and protections.
+- **Dynamic keyspace updates** – Replace keyspaces at runtime via `UpdateKeySpace`.
+- **Warmup & hot key tracking** – Prefetch hot keys on join/leave events.
+- **DataSource protection** – Rate limiting and circuit breaking, globally or per keyspace.
+- **Admin diagnostics** – JSON endpoints for peers and keyspace stats.
+- **Observability** – OpenTelemetry metrics and tracing around engine operations.
+- **TLS support** – End‑to‑end encrypted communication between nodes.
+- **Discovery provider** – Implement custom discovery backends or use the built‑in ones:
   - [Kubernetes](./discovery/kubernetes/README.md) – discover peers via the Kubernetes API.
   - [NATS](./discovery/nats/README.md) – discover peers via [NATS](https://github.com/nats-io/nats.go).
   - [Static](./discovery/static/README.md) – fixed list of peers, ideal for tests and demos.
@@ -270,23 +270,23 @@ To integrate DistCache, configure a [`Config`](./config.go) and implement **two 
 package main
 
 import (
-	"context"
-	"time"
+ "context"
+ "time"
 
-	"github.com/tochemey/distcache"
-	"github.com/tochemey/distcache/admin"
-	"github.com/tochemey/distcache/discovery/static"
-	"github.com/tochemey/distcache/warmup"
+ "github.com/tochemey/distcache"
+ "github.com/tochemey/distcache/admin"
+ "github.com/tochemey/distcache/discovery/static"
+ "github.com/tochemey/distcache/warmup"
 )
 
 type userSource struct{}
 
 func (userSource) Fetch(_ context.Context, _ string) ([]byte, error) {
-	return []byte("ok"), nil
+ return []byte("ok"), nil
 }
 
 type userKeySpace struct {
-	source distcache.DataSource
+ source distcache.DataSource
 }
 
 func (k userKeySpace) Name() string                                 { return "users" }
@@ -295,27 +295,27 @@ func (k userKeySpace) DataSource() distcache.DataSource             { return k.s
 func (k userKeySpace) ExpiresAt(context.Context, string) time.Time  { return time.Time{} }
 
 func main() {
-	provider := static.NewDiscovery(&static.Config{
-		Addresses: []string{"127.0.0.1:3320"},
-	})
+ provider := static.NewDiscovery(&static.Config{
+  Addresses: []string{"127.0.0.1:3320"},
+ })
 
-	cfg := distcache.NewConfig(
-		provider,
-		[]distcache.KeySpace{userKeySpace{source: userSource{}}},
-		distcache.WithAdminConfig(admin.Config{ListenAddr: "127.0.0.1:9090"}),
-		distcache.WithWarmup(warmup.Config{WarmOnJoin: true, WarmOnLeave: true}),
-	)
+ cfg := distcache.NewConfig(
+  provider,
+  []distcache.KeySpace{userKeySpace{source: userSource{}}},
+  distcache.WithAdminConfig(admin.Config{ListenAddr: "127.0.0.1:9090"}),
+  distcache.WithWarmup(warmup.Config{WarmOnJoin: true, WarmOnLeave: true}),
+ )
 
-	engine, err := distcache.NewEngine(cfg)
-	if err != nil {
-		panic(err)
-	}
+ engine, err := distcache.NewEngine(cfg)
+ if err != nil {
+  panic(err)
+ }
 
-	ctx := context.Background()
-	if err := engine.Start(ctx); err != nil {
-		panic(err)
-	}
-	defer engine.Stop(ctx)
+ ctx := context.Background()
+ if err := engine.Start(ctx); err != nil {
+  panic(err)
+ }
+ defer engine.Stop(ctx)
 }
 ```
 

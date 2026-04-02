@@ -30,6 +30,7 @@ import (
 
 	"github.com/tochemey/distcache/admin"
 	"github.com/tochemey/distcache/discovery"
+	"github.com/tochemey/distcache/discovery/standalone"
 	"github.com/tochemey/distcache/hash"
 	"github.com/tochemey/distcache/internal/validation"
 	"github.com/tochemey/distcache/log"
@@ -272,6 +273,24 @@ func NewConfig(provider discovery.Provider, keySpaces []KeySpace, opts ...Option
 		opt.Apply(config)
 	}
 	return config
+}
+
+// NewStandaloneConfig creates a configuration for a single-node cache engine
+// that does not participate in cluster discovery.
+//
+// It uses the built-in [standalone.Discovery] provider, which returns no peers
+// and causes the engine to operate entirely on its own. This is the easiest
+// way to get started with distcache for local development, testing, or
+// single-process deployments.
+//
+// Parameters:
+//   - keySpaces: A slice of KeySpace instances defining different storage namespaces within the cache.
+//   - opts: Optional configuration settings that can be applied to customize the engine behavior.
+//
+// Returns:
+//   - *Config: A pointer to the newly created Config instance.
+func NewStandaloneConfig(keySpaces []KeySpace, opts ...Option) *Config {
+	return NewConfig(standalone.NewDiscovery(), keySpaces, opts...)
 }
 
 // Interface denotes a binding interface. It can be used instead of BindAddr

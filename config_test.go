@@ -185,3 +185,67 @@ func TestConfigValidateKeySpaceProtector(t *testing.T) {
 	err := cfg.Validate()
 	require.Error(t, err)
 }
+
+func TestNewStandaloneConfig(t *testing.T) {
+	t.Run("creates valid config with defaults", func(t *testing.T) {
+		keyspace := NewMockKeySpace("users", size.MB, NewMockDataSource())
+		cfg := NewStandaloneConfig([]KeySpace{keyspace})
+
+		require.NotNil(t, cfg)
+		require.NotNil(t, cfg.DiscoveryProvider())
+		require.Equal(t, "standalone", cfg.DiscoveryProvider().ID())
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("applies options", func(t *testing.T) {
+		keyspace := NewMockKeySpace("users", size.MB, NewMockDataSource())
+		cfg := NewStandaloneConfig(
+			[]KeySpace{keyspace},
+			WithLogger(log.DiscardLogger),
+			WithBindAddr("127.0.0.1"),
+			WithBindPort(4000),
+			WithLabel("test-standalone"),
+		)
+
+		require.NotNil(t, cfg)
+		require.Equal(t, log.DiscardLogger, cfg.Logger())
+		require.Equal(t, "127.0.0.1", cfg.BindAddr())
+		require.Equal(t, 4000, cfg.BindPort())
+		require.Equal(t, "test-standalone", cfg.Label())
+		require.Equal(t, "standalone", cfg.DiscoveryProvider().ID())
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("preserves all default values", func(t *testing.T) {
+		keyspace := NewMockKeySpace("users", size.MB, NewMockDataSource())
+		cfg := NewStandaloneConfig([]KeySpace{keyspace})
+
+		require.Equal(t, DefaultJoinRetryInterval, cfg.JoinRetryInterval())
+		require.Equal(t, DefaultMaxJoinAttempts, cfg.MaxJoinAttempts())
+		require.Equal(t, DefaultShutdownTimeout, cfg.ShutdownTimeout())
+		require.Equal(t, DefaultReadTimeout, cfg.ReadTimeout())
+		require.Equal(t, DefaultWriteTimeout, cfg.WriteTimeout())
+		require.Equal(t, DefaultDiscoveryPort, cfg.DiscoveryPort())
+		require.Equal(t, DefaultPort, cfg.BindPort())
+		require.Equal(t, DefaultKeepAlivePeriod, cfg.KeepAlivePeriod())
+		require.Equal(t, DefaultBootstrapTimeout, cfg.BootstrapTimeout())
+		require.Equal(t, MinimumMemberCountQuorum, cfg.MinimumPeersQuorum())
+		require.Equal(t, MinimumReplicaCount, cfg.ReplicaCount())
+	})
+
+	t.Run("standalone provider lifecycle succeeds", func(t *testing.T) {
+		keyspace := NewMockKeySpace("users", size.MB, NewMockDataSource())
+		cfg := NewStandaloneConfig([]KeySpace{keyspace})
+
+		provider := cfg.DiscoveryProvider()
+		require.NoError(t, provider.Initialize())
+		require.NoError(t, provider.Register())
+
+		peers, err := provider.DiscoverPeers()
+		require.NoError(t, err)
+		require.Empty(t, peers)
+
+		require.NoError(t, provider.Deregister())
+		require.NoError(t, provider.Close())
+	})
+}
