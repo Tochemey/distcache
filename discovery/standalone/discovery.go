@@ -72,7 +72,7 @@ func (d *Discovery) Deregister() error {
 	return nil
 }
 
-// DiscoverPeers always returns an empty list and no error, signalling to the
+// DiscoverPeers always returns an empty list and no error, signaling to the
 // engine that there are no peers to join.
 func (d *Discovery) DiscoverPeers() ([]string, error) {
 	return nil, nil
