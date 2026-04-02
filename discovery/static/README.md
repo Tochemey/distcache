@@ -19,6 +19,6 @@ config := static.Config{
     "node3:3322",
     },
 }
-// instantiate the dnssd discovery provider
+// instantiate the static discovery provider
 provider := static.NewDiscovery(&config)
 ```
