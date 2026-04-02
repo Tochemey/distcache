@@ -52,83 +52,23 @@ Integrate DistCache by implementing two interfaces:
 - [`DataSource`](./datasource.go) – Fetches data from your backend on cache misses.
 - [`KeySpace`](./keyspace.go) – Defines a cache namespace, storage limit, and expiration behavior.
 
-Then create a config and start the engine. The example below uses `NewStandaloneConfig` for a single‑node setup
-with no cluster discovery:
+Then create a config and start the engine:
 
-```go
-package main
+1. **Implement `DataSource`** – Provide a `Fetch(ctx, key) ([]byte, error)` method that retrieves data from your backend (database, API, etc.) when a cache miss occurs.
 
-import (
- "context"
- "encoding/json"
- "fmt"
- "os"
- "os/signal"
- "syscall"
- "time"
+2. **Implement `KeySpace`** – Define a cache namespace by returning its name, maximum byte capacity, the `DataSource` to use on misses, and an optional per‑key expiration time.
 
- "github.com/tochemey/distcache"
-)
+3. **Create a config** – Use `NewStandaloneConfig` for single‑node setups or `NewConfig` with a [discovery provider](#discovery-providers) for distributed clusters.
 
-type userSource struct{}
+4. **Start the engine** – Call `distcache.NewEngine(cfg)` followed by `engine.Start(ctx)`.
 
-func (userSource) Fetch(_ context.Context, key string) ([]byte, error) {
- return json.Marshal(map[string]string{"id": key, "name": "Alice"})
-}
+5. **Read and write** – Use `engine.Get` / `engine.Put` (and their batch variants) to interact with the cache.
 
-type userKeySpace struct{}
-
-func (userKeySpace) Name() string                                    { return "users" }
-func (userKeySpace) MaxBytes() int64                                 { return 64 << 20 }
-func (userKeySpace) DataSource() distcache.DataSource                { return userSource{} }
-func (userKeySpace) ExpiresAt(_ context.Context, _ string) time.Time { return time.Time{} }
-
-func main() {
- ctx := context.Background()
-
- cfg := distcache.NewStandaloneConfig(
-  []distcache.KeySpace{userKeySpace{}},
- )
-
- engine, err := distcache.NewEngine(cfg)
- if err != nil {
-  fmt.Fprintln(os.Stderr, err)
-  os.Exit(1)
- }
-
- if err := engine.Start(ctx); err != nil {
-  fmt.Fprintln(os.Stderr, err)
-  os.Exit(1)
- }
-
- // Put a value into the cache
- if err := engine.Put(ctx, "users", &distcache.Entry{
-  KV:     distcache.KV{Key: "user:1", Value: []byte(`{"id":"user:1","name":"Alice"}`)},
-  Expiry: time.Time{},
- }); err != nil {
-  fmt.Fprintln(os.Stderr, "put failed:", err)
- }
-
- // Get a value from the cache (fetches from DataSource on miss)
- kv, err := engine.Get(ctx, "users", "user:1")
- if err != nil {
-  fmt.Fprintln(os.Stderr, "get failed:", err)
- } else {
-  fmt.Printf("cached: key=%s value=%s\n", kv.Key, kv.Value)
- }
-
- // Wait for interrupt
- sig := make(chan os.Signal, 1)
- signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
- <-sig
-
- _ = engine.Stop(ctx)
-}
-```
-
-For a distributed setup, replace `NewStandaloneConfig` with `NewConfig` and supply a discovery provider
+For a distributed setup, use `NewConfig` and supply a discovery provider
 (e.g., [NATS](./discovery/nats/README.md), [Kubernetes](./discovery/kubernetes/README.md),
 [Static](./discovery/static/README.md), or [DNS](./discovery/dnssd/README.md)).
+
+A complete working example can be found in the [`example`](./example) directory.
 
 ## Engine API
 
@@ -146,10 +86,6 @@ All capabilities are exposed through the [Engine](./engine.go):
 | `DeleteKeyspaces` | Delete multiple keyspaces |
 | `UpdateKeySpace` | Replace a keyspace definition at runtime |
 | `KeySpaces` | List all keyspaces |
-
-## Example
-
-A complete distributed example (using NATS discovery) can be found in the [`example`](./example) directory.
 
 ## Contribution
 
