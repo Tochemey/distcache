@@ -101,15 +101,15 @@ All capabilities are exposed through the [Engine](./engine.go):
 
 Per-operation contract:
 
-- **`Get`** — Returns the most recently observed value at the queried node.
+- **`Get`**: returns the most recently observed value at the queried node.
   That value may briefly lag the writer or the source-of-truth.
-- **`Put`** / **`PutMany`** — Returns once the key's owner has accepted the
-  write. The new value is then asynchronously fanned out to every other peer;
-  failures on non-owner peers are logged and not retried.
-- **`Delete`** / **`DeleteMany`** — RPCs the owner and every other peer.
+- **`Put`** / **`PutMany`**: returns once the key's owner has accepted the
+  write. The new value is then asynchronously fanned out to every other peer.
+  Failures on non-owner peers are logged and not retried.
+- **`Delete`** / **`DeleteMany`**: RPCs the owner and every other peer.
   Returns a multi-error if any peer is unreachable. Surviving peers may serve
   the stale value until TTL or LRU eviction.
-- **`DeleteKeySpace`** / **`UpdateKeySpace`** — Local to the calling node.
+- **`DeleteKeySpace`** / **`UpdateKeySpace`**: local to the calling node.
   Re-issue the call on every node to roll out cluster-wide.
 
 What this means in practice:
