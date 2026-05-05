@@ -324,6 +324,28 @@ func WithTLS(info *TLSInfo) Option {
 	})
 }
 
+// WithGossipSecret enables symmetric authentication and encryption of
+// memberlist gossip traffic using the given key.
+//
+// The key must be 16, 24, or 32 bytes (AES-128, AES-192, or AES-256) and
+// must be identical on every peer in the cluster. Without this option, any
+// process able to reach the discovery port can join the cluster.
+//
+// Parameters:
+//   - secret: The shared key. A nil or empty slice disables gossip auth.
+//
+// Returns:
+//   - Option: A functional option that applies the gossip secret to the Config.
+func WithGossipSecret(secret []byte) Option {
+	return OptionFunc(func(config *Config) {
+		if len(secret) == 0 {
+			config.gossipSecret = nil
+			return
+		}
+		config.gossipSecret = append([]byte(nil), secret...)
+	})
+}
+
 // WithHasher configures the cache engine to use a custom hashing function.
 //
 // This option allows you to specify a custom hash function for key hashing,
@@ -563,6 +585,27 @@ func WithKeySpaceWarmKeys(name string, keys []string) Option {
 	return OptionFunc(func(config *Config) {
 		updateKeySpaceConfig(config, name, func(cfg *KeySpaceConfig) {
 			cfg.WarmKeys = append([]string(nil), keys...)
+		})
+	})
+}
+
+// WithKeySpaceNegativeTTL enables negative caching for a specific keyspace.
+//
+// When DataSource.Fetch returns ErrNotFound (or wraps it), the engine caches
+// a tombstone for the given duration. Subsequent Get calls for the same key
+// return ErrNotFound without invoking the data source until the tombstone
+// expires. A zero or negative duration disables negative caching.
+//
+// Parameters:
+//   - name: The keyspace name to configure.
+//   - ttl: The duration to cache "not found" results.
+//
+// Returns:
+//   - Option: A functional option that applies the keyspace negative TTL.
+func WithKeySpaceNegativeTTL(name string, ttl time.Duration) Option {
+	return OptionFunc(func(config *Config) {
+		updateKeySpaceConfig(config, name, func(cfg *KeySpaceConfig) {
+			cfg.NegativeTTL = ttl
 		})
 	})
 }

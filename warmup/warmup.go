@@ -53,6 +53,16 @@ type Config struct {
 	WarmOnJoin bool
 	// WarmOnLeave enables warm-up on cluster leave events.
 	WarmOnLeave bool
+	// RefreshInterval enables periodic refresh-ahead of hot keys. When
+	// greater than zero, distcache invokes the DataSource for the tracked
+	// hot keys every interval and re-populates the cache, keeping entries
+	// fresh before TTL expiry. Set this to roughly half the keyspace's
+	// DefaultTTL for best results. Zero disables periodic refresh.
+	//
+	// Each node refreshes independently; with N nodes on a synchronized
+	// interval, hot keys may be fetched up to N times per interval. Choose
+	// the interval with that backend load in mind.
+	RefreshInterval time.Duration
 }
 
 // Normalize returns a configuration with defaults applied.

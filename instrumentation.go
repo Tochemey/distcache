@@ -38,9 +38,11 @@ type instrumentation struct {
 	tracer     trace.Tracer
 	traceAttrs []attribute.KeyValue
 
-	requests metric.Int64Counter
-	errors   metric.Int64Counter
-	duration metric.Float64Histogram
+	requests      metric.Int64Counter
+	errors        metric.Int64Counter
+	duration      metric.Float64Histogram
+	cacheMisses   metric.Int64Counter
+	fetchDuration metric.Float64Histogram
 }
 
 func newInstrumentation(cfg *Config) *instrumentation {
@@ -67,6 +69,14 @@ func newInstrumentation(cfg *Config) *instrumentation {
 	inst.duration, _ = meter.Float64Histogram(
 		"distcache.engine.duration.ms",
 		metric.WithDescription("Engine operation latency in milliseconds"),
+	)
+	inst.cacheMisses, _ = meter.Int64Counter(
+		"distcache.cache.misses",
+		metric.WithDescription("Cache misses (DataSource fetches after single-flight dedupe)"),
+	)
+	inst.fetchDuration, _ = meter.Float64Histogram(
+		"distcache.cache.fetch.duration.ms",
+		metric.WithDescription("DataSource fetch latency in milliseconds"),
 	)
 
 	return inst
@@ -103,6 +113,21 @@ func (i *instrumentation) startSpan(ctx context.Context, op string, keyspace str
 	attrs = append(attrs, i.traceAttrs...)
 
 	return i.tracer.Start(ctx, "distcache."+op, trace.WithAttributes(attrs...))
+}
+
+func (i *instrumentation) recordFetch(ctx context.Context, keyspace string, start time.Time) {
+	if i == nil {
+		return
+	}
+
+	attrs := []attribute.KeyValue{attribute.String("distcache.keyspace", keyspace)}
+	if i.cacheMisses != nil {
+		i.cacheMisses.Add(ctx, 1, metric.WithAttributes(attrs...))
+	}
+
+	if i.fetchDuration != nil {
+		i.fetchDuration.Record(ctx, float64(time.Since(start).Milliseconds()), metric.WithAttributes(attrs...))
+	}
 }
 
 func (i *instrumentation) recordMetrics(ctx context.Context, op string, keyspace string, start time.Time, err error) {

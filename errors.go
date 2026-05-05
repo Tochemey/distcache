@@ -36,3 +36,11 @@ var ErrDataSourceRateLimited = errors.New("data source rate limit exceeded")
 
 // ErrDataSourceCircuitOpen indicates that the data source circuit breaker is open.
 var ErrDataSourceCircuitOpen = errors.New("data source circuit breaker open")
+
+// ErrNotFound indicates that a key does not exist in the upstream data source.
+//
+// DataSource implementations should return this error (directly or wrapped via
+// fmt.Errorf with %w) to signal a missing key. When the keyspace has a positive
+// NegativeTTL configured, the engine caches a tombstone for that duration and
+// subsequent Get calls return ErrNotFound without invoking the data source.
+var ErrNotFound = errors.New("key not found")

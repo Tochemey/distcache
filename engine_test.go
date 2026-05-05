@@ -186,10 +186,10 @@ func TestEngineErrorsPath(t *testing.T) {
 	t.Run("EventsListener handles decode error and skips self", func(t *testing.T) {
 		engine, daemon, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
 		engine.daemon = daemon
-		engine.stopEventsListenerSig = make(chan struct{}, 1)
+		ctx, cancel := context.WithCancel(context.Background())
 		eventsCh := make(chan memberlist.NodeEvent, 2)
 
-		go engine.eventsListener(eventsCh)
+		go engine.eventsListener(ctx, eventsCh)
 
 		eventsCh <- memberlist.NodeEvent{Node: &memberlist.Node{Meta: []byte("bad")}}
 
@@ -199,38 +199,38 @@ func TestEngineErrorsPath(t *testing.T) {
 			Event: memberlist.NodeJoin,
 		}
 
-		engine.stopEventsListenerSig <- struct{}{}
+		cancel()
 	})
 
 	t.Run("EventsListener logs decode errors", func(t *testing.T) {
 		engine, daemon, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
 		engine.daemon = daemon
-		engine.stopEventsListenerSig = make(chan struct{}, 1)
+		ctx, cancel := context.WithCancel(context.Background())
 		eventsCh := make(chan memberlist.NodeEvent, 1)
 
-		go engine.eventsListener(eventsCh)
+		go engine.eventsListener(ctx, eventsCh)
 		eventsCh <- memberlist.NodeEvent{Node: &memberlist.Node{Meta: []byte("bad meta")}}
 		pause.Pause(10 * time.Millisecond)
-		engine.stopEventsListenerSig <- struct{}{}
+		cancel()
 	})
 
 	t.Run("EventsListener handles node update events", func(t *testing.T) {
 		engine, daemon, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
 		engine.daemon = daemon
-		engine.stopEventsListenerSig = make(chan struct{}, 1)
+		ctx, cancel := context.WithCancel(context.Background())
 		eventsCh := make(chan memberlist.NodeEvent, 1)
 
 		meta, err := json.Marshal(&Peer{BindAddr: "10.0.0.2", BindPort: 9000, DiscoveryPort: 9001})
 		require.NoError(t, err)
 
-		go engine.eventsListener(eventsCh)
+		go engine.eventsListener(ctx, eventsCh)
 		eventsCh <- memberlist.NodeEvent{
 			Node:  &memberlist.Node{Meta: meta},
 			Event: memberlist.NodeUpdate,
 		}
 
 		pause.Pause(20 * time.Millisecond)
-		engine.stopEventsListenerSig <- struct{}{}
+		cancel()
 		require.NotZero(t, daemon.setPeersCallsLen())
 	})
 
@@ -1131,6 +1131,83 @@ func TestEngineInstrumentationWithProviders(t *testing.T) {
 	require.NotNil(t, ctx)
 	end(nil)
 	end(errors.New("fail"))
+
+	inst.recordFetch(context.Background(), "ks", time.Now())
+	(*instrumentation)(nil).recordFetch(context.Background(), "ks", time.Now())
+}
+
+func TestRefreshHotKeysCallsDataSourceAndSets(t *testing.T) {
+	source := &countingDataSource{}
+	keyspace := &staticExpiryKeySpace{name: "ks", maxBytes: size.MB, dataSource: source}
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+
+	cfg := warmup.Config{MaxHotKeys: 5, MinHits: 1, Concurrency: 2, Timeout: time.Second}.Normalize()
+	engine.warmupConfig = &cfg
+	engine.hotKeys = warmup.NewTracker(cfg.MaxHotKeys)
+	engine.hotKeys.Record("ks", "a")
+	engine.hotKeys.Record("ks", "b")
+
+	spec := &keySpaceWrapper{
+		keyspace:   keyspace,
+		config:     KeySpaceConfig{MaxBytes: size.MB},
+		dataSource: source,
+	}
+	engine.keySpaces.Set("ks", spec)
+	group := &MockGroup{name: "ks"}
+	engine.groups.Set("ks", group)
+
+	engine.refreshHotKeys(context.Background())
+
+	require.Equal(t, 2, source.callCount())
+	calls := group.SetCalls()
+	require.Len(t, calls, 2)
+	require.ElementsMatch(t, []string{"a", "b"}, []string{calls[0].key, calls[1].key})
+}
+
+func TestRefreshHotKeysSkipsWhenNoHotKeys(t *testing.T) {
+	source := &countingDataSource{}
+	keyspace := NewMockKeySpace("ks", size.MB, source)
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), keyspace)
+
+	cfg := warmup.Config{MaxHotKeys: 5, MinHits: 1, Concurrency: 1, Timeout: time.Second}.Normalize()
+	engine.warmupConfig = &cfg
+	engine.hotKeys = warmup.NewTracker(cfg.MaxHotKeys)
+
+	spec := &keySpaceWrapper{
+		keyspace:   keyspace,
+		config:     KeySpaceConfig{MaxBytes: size.MB},
+		dataSource: source,
+	}
+	engine.keySpaces.Set("ks", spec)
+	engine.groups.Set("ks", &MockGroup{name: "ks"})
+
+	engine.refreshHotKeys(context.Background())
+	require.Equal(t, 0, source.callCount())
+}
+
+func TestRefreshHotKeysWritesTombstoneOnNotFound(t *testing.T) {
+	keyspace := NewMockKeySpace("ks", size.MB, notFoundDataSource{})
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), keyspace)
+
+	cfg := warmup.Config{MaxHotKeys: 5, MinHits: 1, Concurrency: 1, Timeout: time.Second}.Normalize()
+	engine.warmupConfig = &cfg
+	engine.hotKeys = warmup.NewTracker(cfg.MaxHotKeys)
+	engine.hotKeys.Record("ks", "missing")
+
+	spec := &keySpaceWrapper{
+		keyspace:   keyspace,
+		config:     KeySpaceConfig{MaxBytes: size.MB, NegativeTTL: time.Minute},
+		dataSource: notFoundDataSource{},
+	}
+	engine.keySpaces.Set("ks", spec)
+	group := &MockGroup{name: "ks"}
+	engine.groups.Set("ks", group)
+
+	engine.refreshHotKeys(context.Background())
+
+	calls := group.SetCalls()
+	require.Len(t, calls, 1)
+	require.Equal(t, "missing", calls[0].key)
 }
 
 func TestCollectWarmupKeys(t *testing.T) {

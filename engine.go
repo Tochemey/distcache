@@ -25,6 +25,7 @@ package distcache
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -186,27 +187,41 @@ type Engine interface {
 	//
 	// Returns an empty list if there are no keyspaces
 	KeySpaces() []string
+
+	// Events returns a channel of cluster-membership events (peer joined,
+	// left, updated). Each call returns a fresh subscriber channel; multiple
+	// subscribers each receive every event.
+	//
+	// The channel is buffered. If a subscriber falls behind, individual events
+	// are dropped rather than blocking the engine. Subscribers should drain
+	// the channel promptly.
+	//
+	// The channel is closed when the engine is stopped. There is no
+	// unsubscribe; obtain the channel once at startup and reuse it for the
+	// lifetime of the engine.
+	Events() <-chan Event
 }
 
 type engine struct {
-	config                *Config
-	hostNode              *Peer
-	mconfig               *memberlist.Config
-	mlist                 memberlistAPI
-	started               atomic.Bool
-	stopEventsListenerSig chan struct{}
-	eventsLock            sync.Mutex
-	lock                  sync.Mutex
-	daemon                daemonAPI
-	groups                *syncmap.Map[string, transport.Group]
-	keySpaces             *syncmap.Map[string, *keySpaceWrapper]
-	instrumentation       *instrumentation
-	admin                 *admin.Server
-	hotKeys               *warmup.Tracker
-	warmupConfig          *warmup.Config
-	newTransportFunc      func(members.TransportConfig) (memberlist.Transport, error)
-	createMemberlistFunc  func(*memberlist.Config) (memberlistAPI, error)
-	listenAndServeFunc    func(context.Context, string, groupcache.Options) (daemonAPI, error)
+	config               *Config
+	hostNode             *Peer
+	mconfig              *memberlist.Config
+	mlist                memberlistAPI
+	started              atomic.Bool
+	eventsCancel         context.CancelFunc
+	eventsLock           sync.Mutex
+	lock                 sync.Mutex
+	daemon               daemonAPI
+	groups               *syncmap.Map[string, transport.Group]
+	keySpaces            *syncmap.Map[string, *keySpaceWrapper]
+	instrumentation      *instrumentation
+	admin                *admin.Server
+	hotKeys              *warmup.Tracker
+	warmupConfig         *warmup.Config
+	events               *eventBus
+	newTransportFunc     func(members.TransportConfig) (memberlist.Transport, error)
+	createMemberlistFunc func(*memberlist.Config) (memberlistAPI, error)
+	listenAndServeFunc   func(context.Context, string, groupcache.Options) (daemonAPI, error)
 }
 
 var _ Engine = (*engine)(nil)
@@ -276,12 +291,12 @@ func NewEngine(config *Config) (Engine, error) {
 	}
 
 	eng := &engine{
-		config:                config,
-		hostNode:              hostNode,
-		stopEventsListenerSig: make(chan struct{}, 1),
-		groups:                syncmap.New[string, transport.Group](),
-		keySpaces:             keySpaces,
-		instrumentation:       newInstrumentation(config),
+		config:          config,
+		hostNode:        hostNode,
+		groups:          syncmap.New[string, transport.Group](),
+		keySpaces:       keySpaces,
+		instrumentation: newInstrumentation(config),
+		events:          newEventBus(),
 		newTransportFunc: func(cfg members.TransportConfig) (memberlist.Transport, error) {
 			return members.NewTransport(cfg)
 		},
@@ -296,6 +311,7 @@ func NewEngine(config *Config) (Engine, error) {
 	if cfg := config.AdminConfig(); cfg != nil {
 		eng.admin = admin.NewServer(*cfg, newAdminProvider(eng), config.Logger())
 	}
+
 	if cfg := config.WarmupConfig(); cfg != nil {
 		normalized := cfg.Normalize()
 		eng.warmupConfig = &normalized
@@ -363,7 +379,13 @@ func (x *engine) Start(ctx context.Context) (err error) {
 	x.started.Store(true)
 	x.lock.Unlock()
 
-	go x.eventsListener(eventsCh)
+	eventsCtx, cancelEvents := context.WithCancel(context.WithoutCancel(ctx))
+	x.eventsCancel = cancelEvents
+	go x.eventsListener(eventsCtx, eventsCh)
+
+	if x.warmupConfig != nil && x.warmupConfig.RefreshInterval > 0 {
+		go x.refreshLoop(eventsCtx, x.warmupConfig.RefreshInterval)
+	}
 
 	x.config.Logger().Infof("Cache engine started: host=%s.", x.hostNode.Address())
 	return nil
@@ -389,7 +411,12 @@ func (x *engine) Stop(ctx context.Context) error { // nolint
 	}
 
 	// stop the events loop
-	close(x.stopEventsListenerSig)
+	if x.eventsCancel != nil {
+		x.eventsCancel()
+	}
+	if x.events != nil {
+		x.events.close()
+	}
 
 	provider := x.config.DiscoveryProvider()
 	chain := errorschain.
@@ -445,7 +472,7 @@ func (x *engine) Put(ctx context.Context, keyspace string, entry *Entry) (err er
 	ctx, cancel := context.WithTimeout(ctx, x.writeTimeout(spec))
 	defer cancel()
 
-	return group.Set(ctx, entry.Key, entry.Value, expiry, true)
+	return group.Set(ctx, entry.Key, spec.wrap(entry.Value), expiry, true)
 }
 
 // PutMany stores multiple key/value pairs in the cache.
@@ -479,7 +506,7 @@ func (x *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry)
 		}
 
 		opCtx, cancel := context.WithTimeout(ctx, x.writeTimeout(spec))
-		if err := group.Set(opCtx, entry.Key, entry.Value, expiry, true); err != nil {
+		if err := group.Set(opCtx, entry.Key, spec.wrap(entry.Value), expiry, true); err != nil {
 			cancel()
 			return err
 		}
@@ -516,8 +543,13 @@ func (x *engine) Get(ctx context.Context, keyspace string, key string) (kv *KV, 
 	ctx, cancel := context.WithTimeout(ctx, x.readTimeout(spec))
 	defer cancel()
 
-	var value []byte
-	if err := group.Get(ctx, key, transport.AllocatingByteSliceSink(&value)); err != nil {
+	var raw []byte
+	if err := group.Get(ctx, key, transport.AllocatingByteSliceSink(&raw)); err != nil {
+		return nil, err
+	}
+
+	value, err := spec.unwrap(raw)
+	if err != nil {
 		return nil, err
 	}
 
@@ -559,12 +591,17 @@ func (x *engine) GetMany(ctx context.Context, keyspace string, keys []string) (k
 	kvs = make([]*KV, 0, len(keys))
 	for _, key := range keys {
 		opCtx, cancel := context.WithTimeout(ctx, x.readTimeout(spec))
-		var value []byte
-		if err := group.Get(opCtx, key, transport.AllocatingByteSliceSink(&value)); err != nil {
+		var raw []byte
+		if err := group.Get(opCtx, key, transport.AllocatingByteSliceSink(&raw)); err != nil {
 			cancel()
 			return nil, err
 		}
 		cancel()
+
+		value, err := spec.unwrap(raw)
+		if err != nil {
+			return nil, err
+		}
 
 		if x.hotKeys != nil {
 			x.hotKeys.Record(keyspace, key)
@@ -643,6 +680,17 @@ func (x *engine) KeySpaces() []string {
 	x.lock.Lock()
 	defer x.lock.Unlock()
 	return x.keySpaces.Keys()
+}
+
+func (x *engine) Events() <-chan Event {
+	return x.events.subscribe()
+}
+
+func (x *engine) publishEvent(t EventType, node *Peer) {
+	if x.events == nil {
+		return
+	}
+	x.events.publish(Event{Type: t, Peer: node, At: time.Now()})
 }
 
 // DeleteKeySpace delete a given keySpace from the cache.
@@ -919,6 +967,9 @@ func (x *engine) newMemberlistConfig(transport memberlist.Transport, meta []byte
 	// As a result, even if a pod receives a gossip message from a reused IP now belonging to a different namespace,
 	// the message will be rejected if it lacks the expected label identifying it as part of the correct ring.
 	config.Label = fmt.Sprintf("prefix-%s", x.config.Label())
+	if secret := x.config.GossipSecret(); len(secret) > 0 {
+		config.SecretKey = secret
+	}
 	return config
 }
 
@@ -953,16 +1004,16 @@ func (x *engine) peers() ([]*Peer, error) {
 }
 
 // eventsListener listens to cluster events
-func (x *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
+func (x *engine) eventsListener(ctx context.Context, eventsChan chan memberlist.NodeEvent) {
 	for {
 		select {
-		case <-x.stopEventsListenerSig:
+		case <-ctx.Done():
 			// finish listening to cluster events
 			return
 		case event := <-eventsChan:
 			node, err := fromBytes(event.Node.Meta)
 			if err != nil {
-				x.config.Logger().Errorf("Cache on host=%s failed to decode event: %v", err)
+				x.config.Logger().Errorf("Cache on host=%s failed to decode event: %v", x.hostNode.Address(), err)
 				continue
 			}
 
@@ -972,7 +1023,6 @@ func (x *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
 				continue
 			}
 
-			ctx := context.Background()
 			// we need to add the new peers
 			currentPeers, _ := x.peers()
 			peersSet := goset.NewSet[peer.Info]()
@@ -1003,6 +1053,7 @@ func (x *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
 				_ = x.daemon.SetPeers(ctx, peersSet.ToSlice())
 				x.eventsLock.Unlock()
 				x.warmupOnClusterEvent(memberlist.NodeJoin)
+				x.publishEvent(EventPeerJoined, node)
 
 			case memberlist.NodeLeave:
 				x.config.Logger().Infof("Cache on host=%s has noticed node=%s has left the cluster", x.hostNode.Address(), node.Address())
@@ -1017,6 +1068,7 @@ func (x *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
 				_ = x.daemon.SetPeers(ctx, peersSet.ToSlice())
 				x.eventsLock.Unlock()
 				x.warmupOnClusterEvent(memberlist.NodeLeave)
+				x.publishEvent(EventPeerLeft, node)
 
 			case memberlist.NodeUpdate:
 				x.eventsLock.Lock()
@@ -1027,6 +1079,7 @@ func (x *engine) eventsListener(eventsChan chan memberlist.NodeEvent) {
 
 				_ = x.daemon.SetPeers(ctx, peersSet.ToSlice())
 				x.eventsLock.Unlock()
+				x.publishEvent(EventPeerUpdated, node)
 			}
 		}
 	}
@@ -1183,4 +1236,81 @@ func (x *engine) prefetchKeys(keyspace string, spec *keySpaceWrapper, keys []str
 	}
 
 	wg.Wait()
+}
+
+// refreshLoop periodically forces a refresh of each keyspace's hot keys by
+// invoking the DataSource directly and re-populating the cache. This keeps
+// hot keys fresh ahead of TTL expiry so reads do not stampede the source.
+func (x *engine) refreshLoop(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			x.refreshHotKeys(ctx)
+		}
+	}
+}
+
+func (x *engine) refreshHotKeys(ctx context.Context) {
+	if x.warmupConfig == nil {
+		return
+	}
+	cfg := *x.warmupConfig
+
+	x.keySpaces.Range(func(name string, spec *keySpaceWrapper) {
+		if spec == nil {
+			return
+		}
+		group, ok := x.groups.Get(name)
+		if !ok {
+			return
+		}
+		keys := x.collectWarmupKeys(name, spec, cfg)
+		if len(keys) == 0 {
+			return
+		}
+
+		timeout := cfg.Timeout
+		if specTimeout := x.readTimeout(spec); specTimeout > 0 && specTimeout < timeout {
+			timeout = specTimeout
+		}
+
+		sem := make(chan struct{}, cfg.Concurrency)
+		var wg sync.WaitGroup
+		for _, key := range keys {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(k string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				x.refreshKey(ctx, group, spec, k, timeout)
+			}(key)
+		}
+		wg.Wait()
+	})
+}
+
+func (x *engine) refreshKey(ctx context.Context, group transport.Group, spec *keySpaceWrapper, key string, timeout time.Duration) {
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	start := time.Now()
+	value, err := spec.dataSource.Fetch(fetchCtx, key)
+	x.instrumentation.recordFetch(fetchCtx, spec.keyspace.Name(), start)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) && spec.negativeCachingEnabled() {
+			_ = group.Set(fetchCtx, key, []byte{tagTombstone}, time.Now().Add(spec.config.NegativeTTL), true)
+		}
+		return
+	}
+
+	expiry := spec.keyspace.ExpiresAt(fetchCtx, key)
+	if expiry.IsZero() && spec.config.DefaultTTL > 0 {
+		expiry = time.Now().Add(spec.config.DefaultTTL)
+	}
+	_ = group.Set(fetchCtx, key, spec.wrap(value), expiry, true)
 }

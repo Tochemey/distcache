@@ -24,6 +24,7 @@ package distcache
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -104,6 +105,20 @@ type staticDataSource struct {
 
 func (s *staticDataSource) Fetch(context.Context, string) ([]byte, error) {
 	return s.value, nil
+}
+
+type notFoundDataSource struct{}
+
+func (notFoundDataSource) Fetch(context.Context, string) ([]byte, error) {
+	return nil, ErrNotFound
+}
+
+type errorDataSource struct {
+	err error
+}
+
+func (s errorDataSource) Fetch(context.Context, string) ([]byte, error) {
+	return nil, s.err
 }
 
 type expirySink struct {
@@ -319,6 +334,98 @@ func TestCreateGroupUsesKeySpaceExpiry(t *testing.T) {
 	sink := &expirySink{}
 	require.NoError(t, group.Get(context.Background(), "k", sink))
 	require.WithinDuration(t, expiry, sink.expiry, 500*time.Millisecond)
+}
+
+func TestKeySpaceWrapperWrapUnwrap(t *testing.T) {
+	t.Run("disabled is identity", func(t *testing.T) {
+		spec := &keySpaceWrapper{
+			keyspace: NewMockKeySpace("ks", size.MB, NewMockDataSource()),
+			config:   KeySpaceConfig{},
+		}
+		input := []byte("hello")
+		require.Equal(t, input, spec.wrap(input))
+		out, err := spec.unwrap(input)
+		require.NoError(t, err)
+		require.Equal(t, input, out)
+	})
+
+	t.Run("enabled tags values and tombstones", func(t *testing.T) {
+		spec := &keySpaceWrapper{
+			keyspace: NewMockKeySpace("ks", size.MB, NewMockDataSource()),
+			config:   KeySpaceConfig{NegativeTTL: time.Second},
+		}
+		wrapped := spec.wrap([]byte("hello"))
+		require.Equal(t, byte(tagValue), wrapped[0])
+		require.Equal(t, []byte("hello"), wrapped[1:])
+
+		out, err := spec.unwrap(wrapped)
+		require.NoError(t, err)
+		require.Equal(t, []byte("hello"), out)
+
+		_, err = spec.unwrap([]byte{tagTombstone})
+		require.ErrorIs(t, err, ErrNotFound)
+
+		_, err = spec.unwrap(nil)
+		require.Error(t, err)
+
+		_, err = spec.unwrap([]byte{0x99})
+		require.Error(t, err)
+	})
+}
+
+func TestCreateGroupNegativeCachingWritesTombstone(t *testing.T) {
+	engine, _, _ := newMockEngine(t, MockProvider{}, NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+
+	spec := &keySpaceWrapper{
+		keyspace:   NewMockKeySpace("ks", size.MB, notFoundDataSource{}),
+		config:     KeySpaceConfig{MaxBytes: size.MB, NegativeTTL: 5 * time.Second},
+		dataSource: notFoundDataSource{},
+	}
+
+	group, err := engine.createGroup(spec)
+	require.NoError(t, err)
+
+	sink := &expirySink{}
+	require.NoError(t, group.Get(context.Background(), "missing", sink))
+	require.Equal(t, []byte{tagTombstone}, sink.value)
+	require.WithinDuration(t, time.Now().Add(5*time.Second), sink.expiry, 500*time.Millisecond)
+}
+
+func TestCreateGroupNegativeCachingWrapsValue(t *testing.T) {
+	engine, _, _ := newMockEngine(t, MockProvider{}, NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+
+	source := &staticDataSource{value: []byte("hello")}
+	spec := &keySpaceWrapper{
+		keyspace:   NewMockKeySpace("ks", size.MB, source),
+		config:     KeySpaceConfig{MaxBytes: size.MB, NegativeTTL: time.Second},
+		dataSource: source,
+	}
+
+	group, err := engine.createGroup(spec)
+	require.NoError(t, err)
+
+	sink := &expirySink{}
+	require.NoError(t, group.Get(context.Background(), "k", sink))
+	require.Equal(t, append([]byte{tagValue}, []byte("hello")...), sink.value)
+}
+
+func TestCreateGroupNegativeCachingPropagatesNonNotFoundError(t *testing.T) {
+	engine, _, _ := newMockEngine(t, MockProvider{}, NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+
+	source := &errorDataSource{err: errors.New("boom")}
+	spec := &keySpaceWrapper{
+		keyspace:   NewMockKeySpace("ks", size.MB, source),
+		config:     KeySpaceConfig{MaxBytes: size.MB, NegativeTTL: time.Second},
+		dataSource: source,
+	}
+
+	group, err := engine.createGroup(spec)
+	require.NoError(t, err)
+
+	sink := &expirySink{}
+	err = group.Get(context.Background(), "k", sink)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrNotFound)
 }
 
 func TestEnsureKeySpacesDetectsDuplicate(t *testing.T) {

@@ -172,6 +172,24 @@ func TestConfigValidateAdminWarmupAndProtector(t *testing.T) {
 		err := cfg.Validate()
 		require.Error(t, err)
 	})
+
+	t.Run("gossip secret with invalid length fails", func(t *testing.T) {
+		cfg := NewConfig(MockProvider{}, []KeySpace{keyspace}, WithGossipSecret(make([]byte, 7)))
+		err := cfg.Validate()
+		require.Error(t, err)
+	})
+
+	t.Run("gossip secret with valid length succeeds", func(t *testing.T) {
+		cfg := NewConfig(MockProvider{}, []KeySpace{keyspace}, WithGossipSecret(make([]byte, 32)))
+		err := cfg.Validate()
+		require.NoError(t, err)
+	})
+
+	t.Run("negative TTL with negative value fails", func(t *testing.T) {
+		cfg := NewConfig(MockProvider{}, []KeySpace{keyspace}, WithKeySpaceNegativeTTL("users", -time.Second))
+		err := cfg.Validate()
+		require.Error(t, err)
+	})
 }
 
 func TestConfigValidateKeySpaceProtector(t *testing.T) {

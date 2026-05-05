@@ -24,6 +24,7 @@ package distcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -33,10 +34,46 @@ import (
 	"github.com/tochemey/distcache/internal/syncmap"
 )
 
+const (
+	tagValue     byte = 0x00
+	tagTombstone byte = 0x01
+)
+
 type keySpaceWrapper struct {
 	keyspace   KeySpace
 	config     KeySpaceConfig
 	dataSource DataSource
+}
+
+func (s *keySpaceWrapper) negativeCachingEnabled() bool {
+	return s.config.NegativeTTL > 0
+}
+
+func (s *keySpaceWrapper) wrap(value []byte) []byte {
+	if !s.negativeCachingEnabled() {
+		return value
+	}
+	out := make([]byte, len(value)+1)
+	out[0] = tagValue
+	copy(out[1:], value)
+	return out
+}
+
+func (s *keySpaceWrapper) unwrap(value []byte) ([]byte, error) {
+	if !s.negativeCachingEnabled() {
+		return value, nil
+	}
+	if len(value) == 0 {
+		return nil, fmt.Errorf("invalid cache entry: empty payload for keyspace %q", s.keyspace.Name())
+	}
+	switch value[0] {
+	case tagValue:
+		return value[1:], nil
+	case tagTombstone:
+		return nil, ErrNotFound
+	default:
+		return nil, fmt.Errorf("invalid cache entry tag %#x for keyspace %q", value[0], s.keyspace.Name())
+	}
 }
 
 func newKeySpaceWrapper(config *Config, keyspace KeySpace) (*keySpaceWrapper, error) {
@@ -118,15 +155,20 @@ func (x *engine) writeTimeout(spec *keySpaceWrapper) time.Duration {
 func (x *engine) createGroup(spec *keySpaceWrapper) (transport.Group, error) {
 	group, err := x.daemon.NewGroup(spec.keyspace.Name(), spec.config.MaxBytes, groupcache.GetterFunc(
 		func(ctx context.Context, id string, dest transport.Sink) error {
+			start := time.Now()
 			bytea, err := spec.dataSource.Fetch(ctx, id)
+			x.instrumentation.recordFetch(ctx, spec.keyspace.Name(), start)
 			if err != nil {
+				if errors.Is(err, ErrNotFound) && spec.negativeCachingEnabled() {
+					return dest.SetBytes([]byte{tagTombstone}, time.Now().Add(spec.config.NegativeTTL))
+				}
 				return err
 			}
 			expiredAt := spec.keyspace.ExpiresAt(ctx, id)
 			if expiredAt.IsZero() && spec.config.DefaultTTL > 0 {
 				expiredAt = time.Now().Add(spec.config.DefaultTTL)
 			}
-			return dest.SetBytes(bytea, expiredAt)
+			return dest.SetBytes(spec.wrap(bytea), expiredAt)
 		}))
 
 	if err != nil {

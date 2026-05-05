@@ -96,6 +96,8 @@ func TestHandlerMethodNotAllowed(t *testing.T) {
 	}{
 		{name: "peers", path: defaultAdminBasePath + "/peers"},
 		{name: "keyspaces", path: defaultAdminBasePath + "/keyspaces"},
+		{name: "healthz", path: defaultAdminBasePath + "/healthz"},
+		{name: "readyz", path: defaultAdminBasePath + "/readyz"},
 	}
 
 	for _, test := range tests {
@@ -106,6 +108,44 @@ func TestHandlerMethodNotAllowed(t *testing.T) {
 			require.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 		})
 	}
+}
+
+func TestHealthzAlwaysOK(t *testing.T) {
+	handler := newHandler(defaultAdminBasePath, stubProvider{})
+	mux := http.NewServeMux()
+	handler.register(mux)
+
+	req := httptest.NewRequest(http.MethodGet, defaultAdminBasePath+"/healthz", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestReadyzReflectsProvider(t *testing.T) {
+	t.Run("not ready returns 503", func(t *testing.T) {
+		handler := newHandler(defaultAdminBasePath, stubProvider{ready: false})
+		mux := http.NewServeMux()
+		handler.register(mux)
+
+		req := httptest.NewRequest(http.MethodGet, defaultAdminBasePath+"/readyz", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	})
+
+	t.Run("ready returns 200", func(t *testing.T) {
+		handler := newHandler(defaultAdminBasePath, stubProvider{ready: true})
+		mux := http.NewServeMux()
+		handler.register(mux)
+
+		req := httptest.NewRequest(http.MethodGet, defaultAdminBasePath+"/readyz", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
 }
 
 func TestHandlerPeersError(t *testing.T) {
@@ -204,6 +244,7 @@ type stubProvider struct {
 	peers     any
 	keyspaces any
 	peersErr  error
+	ready     bool
 }
 
 func (p stubProvider) SnapshotPeers() (any, error) {
@@ -212,6 +253,10 @@ func (p stubProvider) SnapshotPeers() (any, error) {
 
 func (p stubProvider) SnapshotKeySpaces() any {
 	return p.keyspaces
+}
+
+func (p stubProvider) Ready() bool {
+	return p.ready
 }
 
 type errStub string

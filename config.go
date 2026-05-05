@@ -103,6 +103,11 @@ type KeySpaceConfig struct {
 	// CircuitBreaker configures per-keyspace circuit breaking.
 	// When nil, the engine-level circuit breaker is used.
 	CircuitBreaker *CircuitBreakerConfig
+	// NegativeTTL enables negative caching for the keyspace. When greater
+	// than zero, DataSource fetches that return ErrNotFound are cached as
+	// tombstones for this duration, and subsequent Get calls return
+	// ErrNotFound without invoking the data source.
+	NegativeTTL time.Duration
 }
 
 // RateLimitConfig defines a token bucket rate limiter configuration.
@@ -227,6 +232,11 @@ type Config struct {
 
 	// dataSourcePolicy applies to all keyspaces unless overridden.
 	dataSourcePolicy *dataSourceConfig
+
+	// gossipSecret is the symmetric key used to authenticate and encrypt
+	// memberlist gossip traffic. Must be 16, 24, or 32 bytes (AES-128/192/256)
+	// and identical on every peer in the cluster.
+	gossipSecret []byte
 }
 
 // enforce compilation error
@@ -432,6 +442,10 @@ func (c Config) AdminConfig() *admin.Config {
 	return c.adminConfig
 }
 
+func (c Config) GossipSecret() []byte {
+	return c.gossipSecret
+}
+
 // WarmupConfig returns the warmup configuration.
 func (c Config) WarmupConfig() *warmup.Config {
 	return c.warmupConfig
@@ -492,11 +506,16 @@ func (c Config) Validate() error {
 			AddAssertion(cfg.MaxHotKeys > 0, "warmupConfig.maxHotKeys is invalid").
 			AddAssertion(cfg.MinHits > 0, "warmupConfig.minHits is invalid").
 			AddAssertion(cfg.Concurrency > 0, "warmupConfig.concurrency is invalid").
-			AddAssertion(cfg.Timeout > 0, "warmupConfig.timeout is invalid")
+			AddAssertion(cfg.Timeout > 0, "warmupConfig.timeout is invalid").
+			AddAssertion(cfg.RefreshInterval >= 0, "warmupConfig.refreshInterval is invalid")
 	}
 
 	if c.dataSourcePolicy != nil {
 		chain = chain.AddValidator(c.dataSourcePolicy)
+	}
+
+	if n := len(c.gossipSecret); n != 0 && n != 16 && n != 24 && n != 32 {
+		chain = chain.AddAssertion(false, "gossipSecret must be 16, 24, or 32 bytes")
 	}
 
 	return chain.Validate()
@@ -524,6 +543,9 @@ func (v keySpaceConfigValidator) Validate() error {
 	}
 	if v.cfg.WriteTimeout < 0 {
 		chain = chain.AddAssertion(false, "keySpace."+v.name+".writeTimeout is invalid")
+	}
+	if v.cfg.NegativeTTL < 0 {
+		chain = chain.AddAssertion(false, "keySpace."+v.name+".negativeTTL is invalid")
 	}
 	if policy := newDataSourceConfig(v.cfg.RateLimit, v.cfg.CircuitBreaker); policy != nil {
 		if err := policy.Validate(); err != nil {

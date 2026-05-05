@@ -44,6 +44,9 @@ type SnapshotProvider interface {
 	SnapshotPeers() (any, error)
 	// SnapshotKeySpaces returns the current keyspace snapshots.
 	SnapshotKeySpaces() any
+	// Ready reports whether the engine has finished bootstrapping and is
+	// serving traffic. Used by the /readyz endpoint.
+	Ready() bool
 }
 
 // Server hosts the admin HTTP endpoints.
@@ -129,6 +132,8 @@ func newHandler(basePath string, provider SnapshotProvider) *handler {
 func (h *handler) register(mux *http.ServeMux) {
 	mux.HandleFunc(h.basePath+"/peers", h.handlePeers)
 	mux.HandleFunc(h.basePath+"/keyspaces", h.handleKeySpaces)
+	mux.HandleFunc(h.basePath+"/healthz", h.handleHealthz)
+	mux.HandleFunc(h.basePath+"/readyz", h.handleReadyz)
 }
 
 func (h *handler) handlePeers(w http.ResponseWriter, r *http.Request) {
@@ -150,6 +155,28 @@ func (h *handler) handleKeySpaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, h.provider.SnapshotKeySpaces())
+}
+
+func (h *handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+func (h *handler) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.provider.Ready() {
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ready"))
 }
 
 func writeJSON(w http.ResponseWriter, value any) {

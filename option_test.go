@@ -218,6 +218,23 @@ func TestOptions(t *testing.T) {
 				keySpaceName: {CircuitBreaker: &circuitBreaker},
 			}},
 		},
+		{
+			name:     "WithGossipSecret",
+			option:   WithGossipSecret(make([]byte, 16)),
+			expected: Config{gossipSecret: make([]byte, 16)},
+		},
+		{
+			name:     "WithGossipSecret empty disables",
+			option:   WithGossipSecret(nil),
+			expected: Config{},
+		},
+		{
+			name:   "WithKeySpaceNegativeTTL",
+			option: WithKeySpaceNegativeTTL(keySpaceName, 30*time.Second),
+			expected: Config{keySpaceConfigs: map[string]KeySpaceConfig{
+				keySpaceName: {NegativeTTL: 30 * time.Second},
+			}},
+		},
 	}
 
 	for _, tc := range testCases {

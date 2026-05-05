@@ -23,15 +23,16 @@ The caching engine is powered by the battle‑tested [groupcache-go](https://git
 - **Automatic fetch on miss** – Data is loaded into the cache only when requested.
 - **Distributed architecture** – Data is sharded across nodes for scalability and availability.
 - **Reduced backend load** – Frequent reads are served from the cache instead of the database.
-- **Configurable expiry & eviction** – Support for TTL, LRU, and custom policies.
+- **TTL and LRU eviction** – Per-entry and per-keyspace TTL; bounded by per-keyspace `MaxBytes` with LRU eviction provided by groupcache. Optional negative caching via `WithKeySpaceNegativeTTL`.
 - **Automatic node discovery** – Nodes automatically react to cluster topology changes.
 - **KeySpace overrides** – Per‑keyspace TTL, timeouts, max bytes, warm keys, and protections.
 - **Dynamic keyspace updates** – Replace keyspaces at runtime via `UpdateKeySpace`.
-- **Warmup & hot key tracking** – Prefetch hot keys on join/leave events.
+- **Warmup & hot key tracking** – Prefetch hot keys on join/leave events, with optional periodic refresh-ahead via `warmup.Config.RefreshInterval`.
 - **DataSource protection** – Rate limiting and circuit breaking, globally or per keyspace.
-- **Admin diagnostics** – JSON endpoints for peers and keyspace stats.
-- **Observability** – OpenTelemetry metrics and tracing around engine operations.
-- **TLS support** – End‑to‑end encrypted communication between nodes.
+- **Cluster events** – Subscribe to peer-joined / left / updated notifications via `Engine.Events()`.
+- **Admin diagnostics** – JSON endpoints for peers and keyspace stats, plus `/healthz` and `/readyz` probes.
+- **Observability** – OpenTelemetry tracing and metrics for engine operations, cache misses, and DataSource fetch latency.
+- **TLS and gossip auth** – End‑to‑end encrypted communication between nodes; optional symmetric `WithGossipSecret` to authenticate cluster membership.
 - **Discovery providers** – Built‑in support for:
   - [Kubernetes](./discovery/kubernetes/README.md) – discover peers via the Kubernetes API.
   - [NATS](./discovery/nats/README.md) – discover peers via [NATS](https://github.com/nats-io/nats.go).
@@ -68,24 +69,63 @@ For a distributed setup, use `NewConfig` and supply a discovery provider
 (e.g., [NATS](./discovery/nats/README.md), [Kubernetes](./discovery/kubernetes/README.md),
 [Static](./discovery/static/README.md), or [DNS](./discovery/dnssd/README.md)).
 
-A complete working example can be found in the [`example`](./example) directory.
+Two runnable examples are provided:
+
+- [`example`](./example) – a distributed setup using NATS for peer discovery.
+- [`example/advanced`](./example/advanced) – a single-node walkthrough of the
+  optional features: negative caching, periodic refresh-ahead, cluster event
+  subscription, gossip authentication, and the admin server.
 
 ## Engine API
 
 All capabilities are exposed through the [Engine](./engine.go):
 
-| Method | Description |
-|---|---|
-| `Put` | Store a key/value pair in a keyspace |
-| `PutMany` | Store multiple key/value pairs |
-| `Get` | Retrieve a key/value pair |
-| `GetMany` | Retrieve multiple key/value pairs |
-| `Delete` | Remove a key/value pair |
-| `DeleteMany` | Remove multiple key/value pairs |
-| `DeleteKeySpace` | Delete a keyspace and all entries |
-| `DeleteKeyspaces` | Delete multiple keyspaces |
-| `UpdateKeySpace` | Replace a keyspace definition at runtime |
-| `KeySpaces` | List all keyspaces |
+| Method            | Description                              |
+|-------------------|------------------------------------------|
+| `Put`             | Store a key/value pair in a keyspace     |
+| `PutMany`         | Store multiple key/value pairs           |
+| `Get`             | Retrieve a key/value pair                |
+| `GetMany`         | Retrieve multiple key/value pairs        |
+| `Delete`          | Remove a key/value pair                  |
+| `DeleteMany`      | Remove multiple key/value pairs          |
+| `DeleteKeySpace`  | Delete a keyspace and all entries        |
+| `DeleteKeyspaces` | Delete multiple keyspaces                |
+| `UpdateKeySpace`  | Replace a keyspace definition at runtime |
+| `KeySpaces`       | List all keyspaces                       |
+| `Events`          | Subscribe to cluster-membership events   |
+
+## Consistency
+
+> **Note:** DistCache is **eventually consistent**. It is built for fast reads
+> with bounded staleness, not for linearizable or transactional workloads.
+
+Per-operation contract:
+
+- **`Get`** — Returns the most recently observed value at the queried node.
+  That value may briefly lag the writer or the source-of-truth.
+- **`Put`** / **`PutMany`** — Returns once the key's owner has accepted the
+  write. The new value is then asynchronously fanned out to every other peer;
+  failures on non-owner peers are logged and not retried.
+- **`Delete`** / **`DeleteMany`** — RPCs the owner and every other peer.
+  Returns a multi-error if any peer is unreachable. Surviving peers may serve
+  the stale value until TTL or LRU eviction.
+- **`DeleteKeySpace`** / **`UpdateKeySpace`** — Local to the calling node.
+  Re-issue the call on every node to roll out cluster-wide.
+
+What this means in practice:
+
+- After a `Put`, a read on the same node sees the new value immediately. A
+  read on a different peer sees it within milliseconds in steady state, later
+  if the fan-out RPC failed.
+- During a network partition, each side accepts reads and writes independently.
+  There is no quorum and no fencing. Set TTLs short enough to bound the
+  staleness window after the partition heals.
+- If you write to your source-of-truth out of band, the cache continues to
+  serve the old value until TTL expires or until you call `Engine.Delete`.
+
+DistCache is a good fit for read-heavy workloads that tolerate seconds of
+staleness. It is not a fit for linearizable reads, counters, or anything
+requiring a strict order of writes.
 
 ## Contribution
 

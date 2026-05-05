@@ -48,6 +48,10 @@ func (x *adminProvider) SnapshotKeySpaces() any {
 	return x.engine.snapshotKeySpaces()
 }
 
+func (x *adminProvider) Ready() bool {
+	return x.engine != nil && x.engine.started.Load()
+}
+
 func (x *engine) snapshotPeers() ([]*Peer, error) {
 	peers, err := x.peers()
 	if err != nil {
