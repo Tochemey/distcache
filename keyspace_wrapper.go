@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/groupcache/groupcache-go/v3"
@@ -49,14 +50,17 @@ func (s *keySpaceWrapper) negativeCachingEnabled() bool {
 	return s.config.NegativeTTL > 0
 }
 
-func (s *keySpaceWrapper) wrap(value []byte) []byte {
+func (s *keySpaceWrapper) wrap(value []byte) ([]byte, error) {
 	if !s.negativeCachingEnabled() {
-		return value
+		return value, nil
+	}
+	if len(value) == math.MaxInt {
+		return nil, fmt.Errorf("value too large to wrap (%d bytes)", len(value))
 	}
 	out := make([]byte, len(value)+1)
 	out[0] = tagValue
 	copy(out[1:], value)
-	return out
+	return out, nil
 }
 
 func (s *keySpaceWrapper) unwrap(value []byte) ([]byte, error) {
@@ -168,7 +172,11 @@ func (x *engine) createGroup(spec *keySpaceWrapper) (transport.Group, error) {
 			if expiredAt.IsZero() && spec.config.DefaultTTL > 0 {
 				expiredAt = time.Now().Add(spec.config.DefaultTTL)
 			}
-			return dest.SetBytes(spec.wrap(bytea), expiredAt)
+			wrapped, err := spec.wrap(bytea)
+			if err != nil {
+				return err
+			}
+			return dest.SetBytes(wrapped, expiredAt)
 		}))
 
 	if err != nil {

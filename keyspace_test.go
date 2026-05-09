@@ -343,7 +343,9 @@ func TestKeySpaceWrapperWrapUnwrap(t *testing.T) {
 			config:   KeySpaceConfig{},
 		}
 		input := []byte("hello")
-		require.Equal(t, input, spec.wrap(input))
+		wrapped, err := spec.wrap(input)
+		require.NoError(t, err)
+		require.Equal(t, input, wrapped)
 		out, err := spec.unwrap(input)
 		require.NoError(t, err)
 		require.Equal(t, input, out)
@@ -354,7 +356,8 @@ func TestKeySpaceWrapperWrapUnwrap(t *testing.T) {
 			keyspace: NewMockKeySpace("ks", size.MB, NewMockDataSource()),
 			config:   KeySpaceConfig{NegativeTTL: time.Second},
 		}
-		wrapped := spec.wrap([]byte("hello"))
+		wrapped, err := spec.wrap([]byte("hello"))
+		require.NoError(t, err)
 		require.Equal(t, byte(tagValue), wrapped[0])
 		require.Equal(t, []byte("hello"), wrapped[1:])
 

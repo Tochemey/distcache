@@ -472,7 +472,11 @@ func (x *engine) Put(ctx context.Context, keyspace string, entry *Entry) (err er
 	ctx, cancel := context.WithTimeout(ctx, x.writeTimeout(spec))
 	defer cancel()
 
-	return group.Set(ctx, entry.Key, spec.wrap(entry.Value), expiry, true)
+	wrapped, err := spec.wrap(entry.Value)
+	if err != nil {
+		return err
+	}
+	return group.Set(ctx, entry.Key, wrapped, expiry, true)
 }
 
 // PutMany stores multiple key/value pairs in the cache.
@@ -505,8 +509,12 @@ func (x *engine) PutMany(ctx context.Context, keyspace string, entries []*Entry)
 			expiry = time.Now().Add(spec.config.DefaultTTL)
 		}
 
+		wrapped, err := spec.wrap(entry.Value)
+		if err != nil {
+			return err
+		}
 		opCtx, cancel := context.WithTimeout(ctx, x.writeTimeout(spec))
-		if err := group.Set(opCtx, entry.Key, spec.wrap(entry.Value), expiry, true); err != nil {
+		if err := group.Set(opCtx, entry.Key, wrapped, expiry, true); err != nil {
 			cancel()
 			return err
 		}
@@ -1312,5 +1320,9 @@ func (x *engine) refreshKey(ctx context.Context, group transport.Group, spec *ke
 	if expiry.IsZero() && spec.config.DefaultTTL > 0 {
 		expiry = time.Now().Add(spec.config.DefaultTTL)
 	}
-	_ = group.Set(fetchCtx, key, spec.wrap(value), expiry, true)
+	wrapped, err := spec.wrap(value)
+	if err != nil {
+		return
+	}
+	_ = group.Set(fetchCtx, key, wrapped, expiry, true)
 }
