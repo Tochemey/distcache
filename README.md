@@ -4,6 +4,7 @@
 [![codecov](https://codecov.io/gh/Tochemey/distcache/graph/badge.svg?token=0eS0QphVUH)](https://codecov.io/gh/Tochemey/distcache)
 [![GitHub go.mod Go version](https://badges.chse.dev/github/go-mod/go-version/Tochemey/distcache)](https://go.dev/doc/install)
 [![Go Reference](https://pkg.go.dev/badge/github.com/tochemey/distcache.svg)](https://pkg.go.dev/github.com/tochemey/distcache)
+[![Open Source AI Manifesto](https://human-oss.dev/badge-light.svg)](https://human-oss.dev)
 
 DistCache is a **distributed read-through cache engine** built in [Go](https://go.dev/).
 
