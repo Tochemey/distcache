@@ -7,7 +7,7 @@ require (
 	github.com/flowchartsman/retry v1.2.0
 	github.com/groupcache/groupcache-go/v3 v3.5.0
 	github.com/hashicorp/go-sockaddr v1.0.7
-	github.com/hashicorp/memberlist v0.5.4
+	github.com/hashicorp/memberlist v0.6.0
 	github.com/kapetan-io/tackle v0.15.0
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.52.0
