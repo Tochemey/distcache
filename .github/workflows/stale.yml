@@ -12,7 +12,7 @@ jobs:
     steps:
       - name: Checkout
         id: checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Stale
         id: stale
         uses: sonia-corporation/stale@2.5.0
