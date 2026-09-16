@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/deckarep/golang-set/v2 v2.9.0
+	github.com/deckarep/golang-set/v3 v3.0.0
 	github.com/flowchartsman/retry v1.2.0
 	github.com/groupcache/groupcache-go/v3 v3.5.0
 	github.com/hashicorp/go-sockaddr v1.0.7
