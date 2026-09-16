@@ -27,7 +27,7 @@ import (
 	"net"
 	"sync"
 
-	goset "github.com/deckarep/golang-set/v2"
+	goset "github.com/deckarep/golang-set/v3"
 	"go.uber.org/atomic"
 
 	"github.com/tochemey/distcache/discovery"

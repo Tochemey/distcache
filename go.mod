@@ -3,7 +3,7 @@ module github.com/tochemey/distcache
 go 1.26.0
 
 require (
-	github.com/deckarep/golang-set/v2 v2.9.0
+	github.com/deckarep/golang-set/v3 v3.0.0
 	github.com/flowchartsman/retry v1.2.0
 	github.com/groupcache/groupcache-go/v3 v3.5.0
 	github.com/hashicorp/go-sockaddr v1.0.7
@@ -75,7 +75,6 @@ require (
 	github.com/segmentio/fasthash v1.0.3 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	go.mongodb.org/mongo-driver v1.17.10 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect

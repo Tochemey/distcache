@@ -29,7 +29,7 @@ import (
 	"strconv"
 	"sync"
 
-	goset "github.com/deckarep/golang-set/v2"
+	goset "github.com/deckarep/golang-set/v3"
 	"go.uber.org/atomic"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

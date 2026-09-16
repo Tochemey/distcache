@@ -36,7 +36,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	goset "github.com/deckarep/golang-set/v2"
+	goset "github.com/deckarep/golang-set/v3"
 	"github.com/flowchartsman/retry"
 	"github.com/groupcache/groupcache-go/v3"
 	"github.com/groupcache/groupcache-go/v3/transport"
