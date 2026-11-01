@@ -29,7 +29,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -39,26 +38,37 @@ import (
 
 	"github.com/tochemey/distcache"
 	"github.com/tochemey/distcache/discovery/nats"
-	"github.com/tochemey/distcache/internal/size"
-	"github.com/tochemey/distcache/internal/syncmap"
 	"github.com/tochemey/distcache/log"
 )
 
-func main() {
-	ctx := context.Background()
+// MB is one mebibyte, used to size the keyspace.
+const MB = 1 << 20
 
+func main() {
+	logger := log.DefaultLogger
+	if err := run(context.Background(), logger); err != nil {
+		// Fatal exits the process; everything that needs cleanup has already
+		// been released by the deferred calls inside run.
+		logger.Fatal(err)
+	}
+}
+
+// run wires up the example and blocks until SIGINT/SIGTERM. Returning (rather
+// than exiting) lets the deferred shutdowns run.
+func run(ctx context.Context, logger log.Logger) error {
 	ports := dynaport.Get(2)
 	discoveryPort := ports[0]
 	bindPort := ports[1]
 
-	logger := log.DefaultLogger
-
-	// start the nats server
+	// start the nats server and make sure it is torn down on exit
 	server, err := startNatsServer()
 	if err != nil {
-		logger.Fatal(err)
-		os.Exit(1)
+		return err
 	}
+	defer func() {
+		server.Shutdown()
+		server.WaitForShutdown()
+	}()
 
 	// create an instance of the NATs discovery provider
 	// Note: we can also use kubernetes, static, dns or any custom discovery provider
@@ -74,7 +84,7 @@ func main() {
 	dataSource := NewUsersDataSource()
 
 	// create an instance of the KeySpace
-	keySpace := NewUsersKeySpace("users", 20*size.MB, dataSource)
+	keySpace := NewUsersKeySpace("users", 20*MB, dataSource)
 	// You can create different KeySpaces based upon your application needs
 
 	keySpaces := []distcache.KeySpace{keySpace}
@@ -89,14 +99,12 @@ func main() {
 	// create an instance of the Engine
 	engine, err := distcache.NewEngine(config)
 	if err != nil {
-		logger.Fatal(err)
-		os.Exit(1)
+		return err
 	}
 
 	// Start the Engine
 	if err := engine.Start(ctx); err != nil {
-		logger.Fatal(err)
-		os.Exit(1)
+		return err
 	}
 
 	// With the Engine started one can:
@@ -132,34 +140,13 @@ func main() {
 
 	// wait for interruption/termination
 	notifier := make(chan os.Signal, 1)
-	done := make(chan struct{}, 1)
 	signal.Notify(notifier, syscall.SIGINT, syscall.SIGTERM)
-	// wait for a shutdown signal, and then shutdown
-	go func() {
-		sig := <-notifier
-		logger.Infof("received an interrupt signal (%s) to shutdown", sig.String())
-		signal.Stop(notifier)
-		done <- struct{}{}
-	}()
-	<-done
+	sig := <-notifier
+	signal.Stop(notifier)
+	logger.Infof("received an interrupt signal (%s) to shutdown", sig.String())
 
-	// stop the distcache Engine
-	// Please handle error in a production application to avoid resource leakage
-	_ = engine.Stop(ctx)
-
-	pid := os.Getpid()
-	// make sure if it is unix init process to exit
-	if pid == 1 {
-		os.Exit(0)
-	}
-
-	process, _ := os.FindProcess(pid)
-	switch runtime.GOOS {
-	case "windows":
-		_ = process.Kill()
-	default:
-		_ = process.Signal(syscall.SIGTERM)
-	}
+	// stop the distcache Engine; the deferred NATS shutdown runs afterwards
+	return engine.Stop(ctx)
 }
 
 // startNatsServer starts  NATs
@@ -229,47 +216,50 @@ func (x *UsersKeySpace) DataSource() distcache.DataSource {
 	return x.dataSource
 }
 
-func (x *UsersKeySpace) ExpiresAt(ctx context.Context, key string) time.Time {
-	x.Lock()
-	defer x.Unlock()
-
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	if _, err := x.dataSource.Fetch(ctx, key); err != nil {
-		return time.Now().Add(time.Second)
-	}
-
+// ExpiresAt is consulted on the hot path, so it must be cheap: it only reads
+// keyspace state under the read lock and never performs I/O. Returning the
+// zero time means entries never expire.
+func (x *UsersKeySpace) ExpiresAt(_ context.Context, _ string) time.Time {
+	x.RLock()
+	defer x.RUnlock()
 	return time.Time{}
 }
 
+// UsersDataSource is an in-memory, mutex-protected backing store.
 type UsersDataSource struct {
-	store *syncmap.Map[string, User]
+	mu    sync.RWMutex
+	store map[string]User
 }
 
 var _ distcache.DataSource = (*UsersDataSource)(nil)
 
 func NewUsersDataSource() *UsersDataSource {
 	return &UsersDataSource{
-		store: syncmap.New[string, User](),
+		store: make(map[string]User),
 	}
 }
 
 func (x *UsersDataSource) Insert(ctx context.Context, users []*User) error {
-	_, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
+	x.mu.Lock()
+	defer x.mu.Unlock()
 	for _, user := range users {
-		x.store.Set(user.ID, *user)
+		x.store[user.ID] = *user
 	}
 	return nil
 }
 
 func (x *UsersDataSource) Fetch(ctx context.Context, key string) ([]byte, error) {
-	_, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
-	user, ok := x.store.Get(key)
+	x.mu.RLock()
+	user, ok := x.store[key]
+	x.mu.RUnlock()
 	if !ok {
 		return nil, errors.New("not found")
 	}

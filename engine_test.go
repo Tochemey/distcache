@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -69,6 +70,8 @@ func TestEngineErrorsPath(t *testing.T) {
 		provider.EXPECT().Initialize().Return(nil)
 		provider.EXPECT().Register().Return(nil)
 		provider.EXPECT().DiscoverPeers().Return([]string{}, nil)
+		provider.EXPECT().Deregister().Return(nil).Maybe()
+		provider.EXPECT().Close().Return(nil).Maybe()
 
 		engine, _, _ := newMockEngine(t, provider, NewMockKeySpace("ks", size.MB, NewMockDataSource()))
 		engine.listenAndServeFunc = func(context.Context, string, groupcache.Options) (daemonAPI, error) {
@@ -84,6 +87,8 @@ func TestEngineErrorsPath(t *testing.T) {
 		provider.EXPECT().Initialize().Return(nil)
 		provider.EXPECT().Register().Return(nil)
 		provider.EXPECT().DiscoverPeers().Return([]string{}, nil)
+		provider.EXPECT().Deregister().Return(nil).Maybe()
+		provider.EXPECT().Close().Return(nil).Maybe()
 
 		engine, daemon, _ := newMockEngine(t, provider, NewMockKeySpace("ks", size.MB, NewMockDataSource()))
 		daemon.setPeersErr = errors.New("peers")
@@ -100,6 +105,8 @@ func TestEngineErrorsPath(t *testing.T) {
 		provider.EXPECT().Initialize().Return(nil)
 		provider.EXPECT().Register().Return(nil)
 		provider.EXPECT().DiscoverPeers().Return([]string{}, nil)
+		provider.EXPECT().Deregister().Return(nil).Maybe()
+		provider.EXPECT().Close().Return(nil).Maybe()
 
 		engine, daemon, _ := newMockEngine(t, provider, NewMockKeySpace("ks", size.MB, NewMockDataSource()))
 		daemon.newGroupErr = errors.New("group")
@@ -126,15 +133,26 @@ func TestEngineErrorsPath(t *testing.T) {
 		require.ErrorIs(t, err, dsErr)
 	})
 
-	t.Run("Stop fails when leave returns error", func(t *testing.T) {
-		engine, daemon, mlist := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	t.Run("Stop fails when leave returns error but still shuts everything down", func(t *testing.T) {
+		provider := mockDiscovery.NewProvider(t)
+		provider.EXPECT().Deregister().Return(nil)
+		provider.EXPECT().Close().Return(nil)
+
+		engine, daemon, mlist := newMockEngine(t, provider, NewMockKeySpace("ks", size.MB, NewMockDataSource()))
 		engine.started.Store(true)
+		engine.providerInitialized = true
+		engine.providerRegistered = true
 		mlist.leaveErr = errors.New("leave")
 		engine.mlist = mlist
 		engine.daemon = daemon
 
 		err := engine.Stop(context.Background())
 		require.Error(t, err)
+		require.True(t, daemon.shutdownCalled, "daemon must be shut down even when Leave fails")
+		require.False(t, engine.started.Load())
+
+		// a second Stop is a no-op
+		require.NoError(t, engine.Stop(context.Background()))
 	})
 
 	t.Run("PutMany returns error when group set fails", func(t *testing.T) {
@@ -174,13 +192,16 @@ func TestEngineErrorsPath(t *testing.T) {
 		require.ErrorIs(t, err, ErrKeySpaceNotFound)
 	})
 
-	t.Run("Peers returns error when decoding fails", func(t *testing.T) {
+	t.Run("Peers skips members with invalid metadata", func(t *testing.T) {
 		engine, _, mlist := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
-		mlist.nodes = []*memberlist.Node{{Meta: []byte("bad json")}}
+		goodMeta, err := json.Marshal(&Peer{BindAddr: "127.0.0.2", BindPort: 9100, DiscoveryPort: 9200})
+		require.NoError(t, err)
+		mlist.nodes = []*memberlist.Node{{Meta: []byte("bad json")}, {Meta: goodMeta}}
 		engine.mlist = mlist
 
-		_, err := engine.peers()
-		require.Error(t, err)
+		peers := engine.peers()
+		require.Len(t, peers, 1)
+		require.Equal(t, "127.0.0.2:9100", peers[0].Address())
 	})
 
 	t.Run("EventsListener handles decode error and skips self", func(t *testing.T) {
@@ -234,11 +255,11 @@ func TestEngineErrorsPath(t *testing.T) {
 		require.NotZero(t, daemon.setPeersCallsLen())
 	})
 
-	t.Run("JoinCluster fails when memberlist creation fails", func(t *testing.T) {
+	t.Run("Bootstrap fails when memberlist creation fails", func(t *testing.T) {
 		engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
 		engine.createMemberlistFunc = func(*memberlist.Config) (memberlistAPI, error) { return nil, errors.New("mlist") }
 
-		err := engine.joinCluster(context.Background())
+		err := engine.createMemberlist()
 		require.Error(t, err)
 	})
 
@@ -318,11 +339,15 @@ func TestEngine(t *testing.T) {
 		err = errors.New("some error")
 		provider.EXPECT().Initialize().Return(nil)
 		provider.EXPECT().Register().Return(err)
+		// a failed Start must release the provider it initialized, but must not
+		// deregister something that was never registered.
+		provider.EXPECT().Close().Return(nil)
 
 		err = engine.Start(ctx)
 		require.Error(t, err)
 		require.NoError(t, engine.Stop(ctx))
 		provider.AssertExpectations(t)
+		provider.AssertNotCalled(t, "Deregister")
 	})
 	t.Run("With KeySpace Not Found error", func(t *testing.T) {
 		ctx := context.Background()
@@ -818,6 +843,94 @@ func TestStartStop(t *testing.T) {
 	require.True(t, mlist.leaveCalled)
 }
 
+func TestNewEngineValidatesConfig(t *testing.T) {
+	t.Run("nil config", func(t *testing.T) {
+		eng, err := NewEngine(nil)
+		require.Error(t, err)
+		require.Nil(t, eng)
+	})
+
+	t.Run("invalid timeout is rejected before any resource is created", func(t *testing.T) {
+		cfg := NewConfig(mockDiscovery.NewProvider(t), []KeySpace{NewMockKeySpace("ks", size.MB, NewMockDataSource())},
+			WithLogger(log.DiscardLogger),
+			WithBindAddr("127.0.0.1"),
+		)
+		cfg.readTimeout = 0
+		eng, err := NewEngine(cfg)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "readTimeout")
+		require.Nil(t, eng)
+	})
+
+	t.Run("empty bind address is rejected", func(t *testing.T) {
+		cfg := NewConfig(mockDiscovery.NewProvider(t), []KeySpace{NewMockKeySpace("ks", size.MB, NewMockDataSource())},
+			WithLogger(log.DiscardLogger),
+			WithBindAddr(""),
+		)
+		_, err := NewEngine(cfg)
+		require.Error(t, err)
+	})
+}
+
+func TestPutRejectsNilEntry(t *testing.T) {
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	engine.groups.Set("ks", &MockGroup{name: "ks"})
+
+	require.ErrorIs(t, engine.Put(context.Background(), "ks", nil), ErrNilEntry)
+	require.ErrorIs(t, engine.PutMany(context.Background(), "ks", []*Entry{{KV: KV{Key: "a"}}, nil}), ErrNilEntry)
+}
+
+func TestStartIsRejectedWhenAlreadyStarted(t *testing.T) {
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	engine.started.Store(true)
+	require.ErrorIs(t, engine.Start(context.Background()), ErrEngineAlreadyStarted)
+}
+
+func TestStartFailureReleasesResources(t *testing.T) {
+	provider := mockDiscovery.NewProvider(t)
+	provider.EXPECT().Initialize().Return(nil)
+	provider.EXPECT().Register().Return(nil)
+	provider.EXPECT().DiscoverPeers().Return([]string{}, nil)
+	provider.EXPECT().Deregister().Return(nil)
+	provider.EXPECT().Close().Return(nil)
+
+	engine, daemon, mlist := newMockEngine(t, provider, NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	daemon.newGroupErr = errors.New("group")
+
+	err := engine.Start(context.Background())
+	require.Error(t, err)
+	require.False(t, engine.started.Load())
+	require.True(t, daemon.shutdownCalled, "daemon started before the failure must be shut down")
+	require.True(t, mlist.leaveCalled, "memberlist must leave the cluster")
+	require.Nil(t, engine.eventsCancel, "events loop must be cancelled")
+
+	// Stop after a failed Start is a no-op and must not error
+	require.NoError(t, engine.Stop(context.Background()))
+}
+
+func TestEventsListenerBeforeDaemonIsReady(t *testing.T) {
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	engine.daemon = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eventsCh := make(chan memberlist.NodeEvent, 1)
+	events := engine.Events()
+
+	meta, err := json.Marshal(&Peer{BindAddr: "10.0.0.2", BindPort: 9000, DiscoveryPort: 9001})
+	require.NoError(t, err)
+
+	go engine.eventsListener(ctx, eventsCh)
+	eventsCh <- memberlist.NodeEvent{Node: &memberlist.Node{Meta: meta}, Event: memberlist.NodeJoin}
+
+	select {
+	case evt := <-events:
+		require.Equal(t, EventPeerJoined, evt.Type)
+		require.Equal(t, "10.0.0.2:9000", evt.Peer.Address())
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a peer joined event even without a daemon")
+	}
+}
+
 func TestSetupMemberlistConfigError(t *testing.T) {
 	provider := new(mockDiscovery.Provider)
 	cfg := NewConfig(provider, []KeySpace{NewMockKeySpace("ks", size.MB, NewMockDataSource())},
@@ -864,15 +977,21 @@ func TestStartDaemonWithTLS(t *testing.T) {
 }
 
 func TestApplyPeersError(t *testing.T) {
+	remoteMeta, err := json.Marshal(&Peer{BindAddr: "10.0.0.1", BindPort: 2222})
+	require.NoError(t, err)
+
 	daemon := &MockDaemon{setPeersErr: errors.New("no peers")}
 	e := &engine{
-		config:   &Config{},
+		config:   &Config{logger: log.DiscardLogger},
 		hostNode: &Peer{BindAddr: "127.0.0.1", BindPort: 1111},
 		daemon:   daemon,
+		mlist:    &MockMemberlist{nodes: []*memberlist.Node{{Meta: remoteMeta}}},
 	}
 
-	err := e.applyPeers(context.Background(), []*Peer{{BindAddr: "10.0.0.1", BindPort: 2222}})
+	err = e.applyPeers(context.Background())
 	require.Error(t, err)
+	require.Len(t, daemon.setPeersCalls, 1)
+	require.Len(t, daemon.setPeersCalls[0], 2, "self plus the remote member")
 }
 
 func TestCreateGroupsError(t *testing.T) {
@@ -1094,8 +1213,10 @@ func TestSnapshotPeersInvalidMeta(t *testing.T) {
 	engine, _, mlist := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
 	mlist.nodes = []*memberlist.Node{{Meta: []byte("bad")}}
 
-	_, err := engine.snapshotPeers()
-	require.Error(t, err)
+	peers, err := engine.snapshotPeers()
+	require.NoError(t, err)
+	require.Len(t, peers, 1)
+	require.True(t, peers[0].IsSelf)
 }
 
 func TestEngineInstrumentationNoop(t *testing.T) {
@@ -1304,4 +1425,100 @@ func TestWarmupOnClusterEventRespectsConfig(t *testing.T) {
 func extractHTTPOpts(tp *transport.HttpTransport) transport.HttpTransportOptions {
 	val := reflect.ValueOf(tp).Elem().FieldByName("opts")
 	return reflect.NewAt(val.Type(), unsafe.Pointer(val.UnsafeAddr())).Elem().Interface().(transport.HttpTransportOptions)
+}
+
+func TestKeySpaceMutatorsAfterStop(t *testing.T) {
+	engine, _, _ := newMockEngine(t, mockDiscovery.NewProvider(t), NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	engine.groups.Set("ks", &MockGroup{name: "ks"})
+	engine.started.Store(true)
+
+	require.NoError(t, engine.Stop(context.Background()))
+
+	ctx := context.Background()
+	require.ErrorIs(t, engine.DeleteKeySpace(ctx, "ks"), ErrEngineNotStarted)
+	require.ErrorIs(t, engine.DeleteKeyspaces(ctx, []string{"ks"}), ErrEngineNotStarted)
+	require.ErrorIs(t, engine.UpdateKeySpace(ctx, NewMockKeySpace("ks", size.MB, NewMockDataSource())), ErrEngineNotStarted)
+}
+
+// TestStopDuringMembershipEventsIsRaceFree hammers the two readers of the
+// memberlist pointer (events loop and admin snapshot) while Stop clears it.
+// It exists to be run with -race.
+func TestStopDuringMembershipEventsIsRaceFree(t *testing.T) {
+	provider := mockDiscovery.NewProvider(t)
+	provider.EXPECT().Deregister().Return(nil)
+	provider.EXPECT().Close().Return(nil)
+
+	engine, _, mlist := newMockEngine(t, provider, NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	remoteMeta, err := json.Marshal(&Peer{BindAddr: "127.0.0.2", BindPort: 9100, DiscoveryPort: 9200})
+	require.NoError(t, err)
+	mlist.nodes = []*memberlist.Node{{Meta: remoteMeta}}
+
+	engine.started.Store(true)
+	engine.providerInitialized = true
+	engine.providerRegistered = true
+
+	eventsCtx, cancelEvents := context.WithCancel(context.Background())
+	engine.eventsCancel = cancelEvents
+	eventsCh := make(chan memberlist.NodeEvent, 64)
+	go engine.eventsListener(eventsCtx, eventsCh)
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			select {
+			case eventsCh <- memberlist.NodeEvent{Node: &memberlist.Node{Meta: remoteMeta}, Event: memberlist.NodeLeave}:
+			default:
+			}
+			_, _ = engine.snapshotPeers()
+		}
+	}()
+
+	pause.Pause(30 * time.Millisecond)
+	require.NoError(t, engine.Stop(context.Background()))
+	close(stop)
+	wg.Wait()
+
+	// after Stop the snapshot only contains the host node
+	peers, err := engine.snapshotPeers()
+	require.NoError(t, err)
+	require.Len(t, peers, 1)
+}
+
+func TestStopPreemptsRetryingStart(t *testing.T) {
+	provider := mockDiscovery.NewProvider(t)
+	provider.EXPECT().Initialize().Return(nil)
+	provider.EXPECT().Register().Return(nil)
+	provider.EXPECT().DiscoverPeers().Return(nil, errors.New("discovery down"))
+	provider.EXPECT().Deregister().Return(nil)
+	provider.EXPECT().Close().Return(nil)
+
+	engine, _, mlist := newMockEngine(t, provider, NewMockKeySpace("ks", size.MB, NewMockDataSource()))
+	// without preemption Start would retry for roughly a minute
+	engine.config.maxJoinAttempts = 300
+	engine.config.joinRetryInterval = 200 * time.Millisecond
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- engine.Start(context.Background()) }()
+
+	pause.Pause(300 * time.Millisecond)
+	begin := time.Now()
+	require.NoError(t, engine.Stop(context.Background()))
+
+	select {
+	case err := <-startErr:
+		require.Error(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start was not interrupted by Stop")
+	}
+	require.Less(t, time.Since(begin), 3*time.Second)
+	require.True(t, mlist.leaveCalled, "the memberlist created during Start must be left")
+	require.False(t, engine.started.Load())
 }

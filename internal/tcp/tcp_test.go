@@ -64,3 +64,39 @@ func TestNewKeepAliveListener(t *testing.T) {
 		require.NotNil(t, lnr)
 	})
 }
+
+func TestGetHostPortWildcard(t *testing.T) {
+	testCases := []struct {
+		name     string
+		address  string
+		expected string
+	}{
+		{name: "empty host", address: ":8080", expected: "0.0.0.0"},
+		{name: "ipv4 wildcard", address: "0.0.0.0:8080", expected: "0.0.0.0"},
+		{name: "ipv6 wildcard", address: "[::]:8080", expected: "::"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			host, port, err := GetHostPort(tc.address)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, host)
+			assert.Exactly(t, 8080, port)
+			assert.True(t, isWildcard(host))
+		})
+	}
+
+	assert.False(t, isWildcard("127.0.0.1"))
+	assert.False(t, isWildcard("::1"))
+}
+
+func TestGetBindIPWildcard(t *testing.T) {
+	// every wildcard form must resolve to a concrete, non-wildcard IP
+	for _, address := range []string{":8080", "0.0.0.0:8080", "[::]:8080"} {
+		bindIP, err := GetBindIP("", address)
+		require.NoError(t, err, address)
+		require.NotEmpty(t, bindIP, address)
+		assert.False(t, isWildcard(bindIP), address)
+		assert.NotNil(t, net.ParseIP(bindIP), address)
+	}
+}

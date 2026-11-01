@@ -43,4 +43,19 @@ func TestConfig(t *testing.T) {
 		config := Config{}
 		assert.Error(t, config.Validate())
 	})
+	t.Run("With server address missing the nats scheme", func(t *testing.T) {
+		// this used to panic with an index out of range
+		config := Config{
+			Server:        "nats:4222",
+			Subject:       "subject",
+			Host:          "host",
+			DiscoveryPort: 123,
+		}
+		assert.NotPanics(t, func() {
+			assert.Error(t, config.Validate())
+		})
+		assert.Error(t, NewServerAddrValidator("localhost:4222").Validate())
+		assert.Error(t, NewServerAddrValidator("nats://").Validate())
+		assert.NoError(t, NewServerAddrValidator("nats://localhost:4222").Validate())
+	})
 }

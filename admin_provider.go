@@ -53,10 +53,9 @@ func (x *adminProvider) Ready() bool {
 }
 
 func (x *engine) snapshotPeers() ([]*Peer, error) {
-	peers, err := x.peers()
-	if err != nil {
-		return nil, err
-	}
+	x.peersLock.Lock()
+	peers := x.peers()
+	x.peersLock.Unlock()
 
 	result := make([]*Peer, 0, len(peers)+1)
 	result = append(result, x.hostNode)

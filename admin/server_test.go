@@ -53,7 +53,7 @@ func TestAdminEndpoints(t *testing.T) {
 		},
 	}
 
-	handler := newHandler(defaultAdminBasePath, provider)
+	handler := newHandler(defaultAdminBasePath, provider, nil)
 	mux := http.NewServeMux()
 	handler.register(mux)
 
@@ -86,7 +86,7 @@ func TestAdminEndpoints(t *testing.T) {
 
 func TestHandlerMethodNotAllowed(t *testing.T) {
 	provider := stubProvider{}
-	handler := newHandler(defaultAdminBasePath, provider)
+	handler := newHandler(defaultAdminBasePath, provider, nil)
 	mux := http.NewServeMux()
 	handler.register(mux)
 
@@ -111,7 +111,7 @@ func TestHandlerMethodNotAllowed(t *testing.T) {
 }
 
 func TestHealthzAlwaysOK(t *testing.T) {
-	handler := newHandler(defaultAdminBasePath, stubProvider{})
+	handler := newHandler(defaultAdminBasePath, stubProvider{}, nil)
 	mux := http.NewServeMux()
 	handler.register(mux)
 
@@ -124,7 +124,7 @@ func TestHealthzAlwaysOK(t *testing.T) {
 
 func TestReadyzReflectsProvider(t *testing.T) {
 	t.Run("not ready returns 503", func(t *testing.T) {
-		handler := newHandler(defaultAdminBasePath, stubProvider{ready: false})
+		handler := newHandler(defaultAdminBasePath, stubProvider{ready: false}, nil)
 		mux := http.NewServeMux()
 		handler.register(mux)
 
@@ -136,7 +136,7 @@ func TestReadyzReflectsProvider(t *testing.T) {
 	})
 
 	t.Run("ready returns 200", func(t *testing.T) {
-		handler := newHandler(defaultAdminBasePath, stubProvider{ready: true})
+		handler := newHandler(defaultAdminBasePath, stubProvider{ready: true}, nil)
 		mux := http.NewServeMux()
 		handler.register(mux)
 
@@ -153,7 +153,8 @@ func TestHandlerPeersError(t *testing.T) {
 	provider := stubProvider{
 		peersErr: errStub(expectedErr),
 	}
-	handler := newHandler(defaultAdminBasePath, provider)
+	logger := &countingLogger{Logger: log.DiscardLogger}
+	handler := newHandler(defaultAdminBasePath, provider, logger)
 	mux := http.NewServeMux()
 	handler.register(mux)
 
@@ -162,7 +163,25 @@ func TestHandlerPeersError(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
-	require.Contains(t, rec.Body.String(), expectedErr)
+	// the detail is logged, never returned to the client
+	require.Equal(t, "internal error\n", rec.Body.String())
+	require.NotContains(t, rec.Body.String(), expectedErr)
+	require.Equal(t, int64(1), logger.errorfCalls())
+}
+
+func TestHandlerHeadProbes(t *testing.T) {
+	handler := newHandler(defaultAdminBasePath, stubProvider{ready: true}, nil)
+	mux := http.NewServeMux()
+	handler.register(mux)
+
+	for _, path := range []string{"/healthz", "/readyz"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodHead, defaultAdminBasePath+path, nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+		})
+	}
 }
 
 func TestSnapshotKeySpaceStats(t *testing.T) {
@@ -220,20 +239,53 @@ func TestServerStartTLSLogsServeError(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
-func TestWaitForAdminConnectCanceled(t *testing.T) {
+func TestServerStartCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := waitForAdminConnect(ctx, "127.0.0.1:1")
-	require.ErrorIs(t, err, context.Canceled)
+	server := NewServer(Config{ListenAddr: "127.0.0.1:0"}, stubProvider{}, nil)
+	require.ErrorIs(t, server.Start(ctx), context.Canceled)
+	require.Nil(t, server.listener)
 }
 
-func TestWaitForAdminConnectDeadlineExceeded(t *testing.T) {
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
+func TestServerMiddlewareInvoked(t *testing.T) {
+	var calls atomic.Int64
+	middleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			if r.Header.Get("Authorization") != "Bearer secret" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 
-	err := waitForAdminConnect(ctx, "127.0.0.1:1")
-	require.ErrorIs(t, err, context.DeadlineExceeded)
+	server := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		Middleware: middleware,
+	}, stubProvider{ready: true}, log.DiscardLogger)
+	require.NoError(t, server.Start(context.Background()))
+	t.Cleanup(func() {
+		_ = server.Shutdown(context.Background())
+	})
+
+	url := "http://" + server.listener.Addr().String() + defaultAdminBasePath + "/readyz"
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.Equal(t, int64(2), calls.Load())
 }
 
 type peerSnapshot struct {
@@ -300,4 +352,15 @@ func (l *countingLogger) Errorf(format string, args ...any) {
 
 func (l *countingLogger) errorfCalls() int64 {
 	return l.count.Load()
+}
+
+func TestHandlerRootBasePath(t *testing.T) {
+	mux := http.NewServeMux()
+	newHandler("/", stubProvider{}, nil).register(mux)
+
+	for _, path := range []string{"/healthz", "/peers", "/keyspaces"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		require.Equal(t, http.StatusOK, rec.Code, path)
+	}
 }

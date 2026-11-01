@@ -25,6 +25,7 @@ package distcache
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"testing"
 
@@ -32,6 +33,22 @@ import (
 
 	"github.com/tochemey/distcache/log"
 )
+
+func TestCacheLogRendersStructuredArgs(t *testing.T) {
+	buffer := new(bytes.Buffer)
+	logger := log.New(log.DebugLevel, buffer)
+	cl := newCacheLog(logger)
+
+	cl.Error("while calling Set on peer", "peer", "10.0.0.5:7000", "key", "k1", "err", errors.New("boom"))
+	cl.Info("Listening on 127.0.0.1:3320 ....")
+	cl.Info("odd args", "only-key")
+
+	out := buffer.String()
+	require.Contains(t, out, "while calling Set on peer peer=10.0.0.5:7000 key=k1 err=boom")
+	require.NotContains(t, out, "%!")
+	require.Contains(t, out, "Listening on 127.0.0.1:3320 ....")
+	require.Contains(t, out, "odd args only-key=<missing>")
+}
 
 func TestLogWriter(t *testing.T) {
 	t.Run("With info log", func(t *testing.T) {

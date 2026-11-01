@@ -30,6 +30,9 @@ import (
 	"github.com/tochemey/distcache/internal/validation"
 )
 
+// natsScheme defines the expected NATS server address scheme
+const natsScheme = "nats://"
+
 // Config represents the nats provider discoConfig
 type Config struct {
 	// Server defines the nats server in the format nats://host:port
@@ -74,12 +77,12 @@ func NewServerAddrValidator(server string) validation.Validator {
 
 // Validate execute the validation code
 func (x *ServerAddrValidator) Validate() error {
-	// make sure that the nats prefix is set in the server address
-	if !strings.HasPrefix(x.server, "nats") {
-		return fmt.Errorf("invalid nats server address: %s", x.server)
+	// make sure that the nats scheme is set in the server address
+	hostAndPort, found := strings.CutPrefix(strings.TrimSpace(x.server), natsScheme)
+	if !found {
+		return fmt.Errorf("invalid nats server address: %s: expected format %shost:port", x.server, natsScheme)
 	}
 
-	hostAndPort := strings.SplitN(x.server, "nats://", 2)[1]
 	return validation.NewTCPAddressValidator(hostAndPort).Validate()
 }
 

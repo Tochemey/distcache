@@ -32,4 +32,3 @@ func TestPeerAddress(t *testing.T) {
 	p := Peer{BindAddr: "127.0.0.1", BindPort: 8080}
 	require.Equal(t, "127.0.0.1:8080", p.Address())
 }
-

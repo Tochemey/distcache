@@ -31,23 +31,9 @@ import (
 )
 
 func TestOptions(t *testing.T) {
-	testCases := []struct {
-		name     string
-		option   Option
-		expected Discovery
-	}{
-		{
-			name:     "WithLogger",
-			option:   WithLogger(log.DefaultLogger),
-			expected: Discovery{logger: log.DefaultLogger},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			var discovery Discovery
-			tc.option.Apply(&discovery)
-			assert.Equal(t, tc.expected, discovery)
-		})
-	}
+	t.Run("WithLogger", func(t *testing.T) {
+		discovery := &Discovery{}
+		WithLogger(log.DefaultLogger).Apply(discovery)
+		assert.Same(t, log.DefaultLogger, discovery.logger)
+	})
 }

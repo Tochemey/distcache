@@ -596,6 +596,11 @@ func WithKeySpaceWarmKeys(name string, keys []string) Option {
 // return ErrNotFound without invoking the data source until the tombstone
 // expires. A zero or negative duration disables negative caching.
 //
+// Enabling negative caching changes how values of that keyspace are encoded
+// on the wire (a one-byte tag is prepended). Every node in the cluster must
+// therefore use the same NegativeTTL setting for a given keyspace; mixing
+// nodes with and without negative caching corrupts reads across peers.
+//
 // Parameters:
 //   - name: The keyspace name to configure.
 //   - ttl: The duration to cache "not found" results.

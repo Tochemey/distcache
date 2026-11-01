@@ -46,8 +46,9 @@ type Discovery struct {
 	client kubernetes.Interface
 	mu     sync.Mutex
 
-	stopChan chan struct{}
-	// states whether the actor system has started or not
+	// states whether the actor system has started or not.
+	// The pointer is set once at construction time and must never be replaced
+	// afterwards: use Load/Store so that unlocked readers stay race-free.
 	initialized *atomic.Bool
 }
 
@@ -59,7 +60,6 @@ func NewDiscovery(config *Config) *Discovery {
 	// create an instance of
 	discovery := &Discovery{
 		mu:          sync.Mutex{},
-		stopChan:    make(chan struct{}, 1),
 		initialized: atomic.NewBool(false),
 		config:      config,
 	}
@@ -104,7 +104,7 @@ func (d *Discovery) Register() error {
 	}
 
 	d.client = client
-	d.initialized = atomic.NewBool(true)
+	d.initialized.Store(true)
 	return nil
 }
 
@@ -116,8 +116,7 @@ func (d *Discovery) Deregister() error {
 	if !d.initialized.Load() {
 		return discovery.ErrNotInitialized
 	}
-	d.initialized = atomic.NewBool(false)
-	close(d.stopChan)
+	d.initialized.Store(false)
 	return nil
 }
 
@@ -127,7 +126,8 @@ func (d *Discovery) DiscoverPeers() ([]string, error) {
 		return nil, discovery.ErrNotInitialized
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), d.config.timeout())
+	defer cancel()
 
 	pods, err := d.client.CoreV1().Pods(d.config.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labels.SelectorFromSet(d.config.PodLabels).String(),

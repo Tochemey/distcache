@@ -24,6 +24,7 @@ package kubernetes
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -46,5 +47,18 @@ func TestConfig(t *testing.T) {
 			DiscoveryPortName: "",
 		}
 		assert.Error(t, config.Validate())
+	})
+	t.Run("With negative timeout", func(t *testing.T) {
+		config := &Config{
+			Namespace:         "namespace",
+			DiscoveryPortName: "discoveryPortName",
+			PodLabels:         map[string]string{"label1": "value1"},
+			Timeout:           -time.Second,
+		}
+		assert.Error(t, config.Validate())
+	})
+	t.Run("With timeout default", func(t *testing.T) {
+		assert.Equal(t, DefaultTimeout, Config{}.timeout())
+		assert.Equal(t, time.Second, Config{Timeout: time.Second}.timeout())
 	})
 }

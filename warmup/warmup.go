@@ -107,12 +107,7 @@ func NewTracker(maxKeys int) *Tracker {
 
 // Record increments the hit count for a key within the given keyspace.
 func (t *Tracker) Record(keyspace string, key string) {
-	set, ok := t.keyspaces.Get(keyspace)
-	if !ok {
-		set = newHotKeySet(t.maxKeys)
-		t.keyspaces.Set(keyspace, set)
-	}
-	set.record(key)
+	t.keyspaceSet(keyspace).record(key)
 }
 
 // TopKeys returns the most frequently accessed keys for a keyspace.
@@ -124,16 +119,41 @@ func (t *Tracker) TopKeys(keyspace string, limit int, minHits uint64) []string {
 	return set.topKeys(limit, minHits)
 }
 
+// keyspaceSet returns the hot key set for the keyspace, creating it on first
+// use. GetOrSet makes concurrent first calls agree on a single set.
+func (t *Tracker) keyspaceSet(keyspace string) *hotKeySet {
+	if set, ok := t.keyspaces.Get(keyspace); ok {
+		return set
+	}
+	set, _ := t.keyspaces.GetOrSet(keyspace, newHotKeySet(t.maxKeys))
+	return set
+}
+
+// hotKeySet is a bounded frequency map.
+//
+// The map is allowed to grow to twice maxKeys; once that bound is exceeded a
+// single eviction pass keeps the maxKeys most frequent entries and halves the
+// surviving counts so that keys that were hot only in the past age out. The
+// pass costs O(n log n) once every maxKeys insertions, i.e. amortized
+// O(log n) per newly inserted key, and recording an existing key is O(1).
 type hotKeySet struct {
 	mu      sync.Mutex
 	maxKeys int
 	counts  map[string]uint64
 }
 
+type keyCount struct {
+	key   string
+	count uint64
+}
+
 func newHotKeySet(maxKeys int) *hotKeySet {
+	if maxKeys < 1 {
+		maxKeys = 1
+	}
 	return &hotKeySet{
 		maxKeys: maxKeys,
-		counts:  make(map[string]uint64),
+		counts:  make(map[string]uint64, 2*maxKeys+1),
 	}
 }
 
@@ -142,22 +162,31 @@ func (s *hotKeySet) record(key string) {
 	defer s.mu.Unlock()
 
 	s.counts[key]++
-	if len(s.counts) <= s.maxKeys {
+	if len(s.counts) <= 2*s.maxKeys {
 		return
 	}
+	s.evict()
+}
 
-	var minKey string
-	var minCount uint64
-	first := true
+// evict trims the set down to maxKeys entries, keeping the most frequent
+// ones, and halves the counts of the survivors. Must be called with mu held.
+func (s *hotKeySet) evict() {
+	entries := make([]keyCount, 0, len(s.counts))
 	for k, count := range s.counts {
-		if first || count < minCount {
-			minKey = k
-			minCount = count
-			first = false
-		}
+		entries = append(entries, keyCount{key: k, count: count})
 	}
-	if minKey != "" {
-		delete(s.counts, minKey)
+	sortByCountDesc(entries)
+
+	for _, entry := range entries[s.maxKeys:] {
+		delete(s.counts, entry.key)
+	}
+	// survivors whose count halves to zero are dropped so they free their slot
+	for _, entry := range entries[:s.maxKeys] {
+		if halved := entry.count / 2; halved > 0 {
+			s.counts[entry.key] = halved
+		} else {
+			delete(s.counts, entry.key)
+		}
 	}
 }
 
@@ -169,11 +198,6 @@ func (s *hotKeySet) topKeys(limit int, minHits uint64) []string {
 		return nil
 	}
 
-	type keyCount struct {
-		key   string
-		count uint64
-	}
-
 	entries := make([]keyCount, 0, len(s.counts))
 	for k, count := range s.counts {
 		if count < minHits {
@@ -181,13 +205,7 @@ func (s *hotKeySet) topKeys(limit int, minHits uint64) []string {
 		}
 		entries = append(entries, keyCount{key: k, count: count})
 	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].count == entries[j].count {
-			return entries[i].key < entries[j].key
-		}
-		return entries[i].count > entries[j].count
-	})
+	sortByCountDesc(entries)
 
 	if len(entries) > limit {
 		entries = entries[:limit]
@@ -198,4 +216,15 @@ func (s *hotKeySet) topKeys(limit int, minHits uint64) []string {
 		keys = append(keys, entry.key)
 	}
 	return keys
+}
+
+// sortByCountDesc orders entries by descending count, breaking ties by key so
+// that results are deterministic.
+func sortByCountDesc(entries []keyCount) {
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].count == entries[j].count {
+			return entries[i].key < entries[j].key
+		}
+		return entries[i].count > entries[j].count
+	})
 }

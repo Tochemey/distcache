@@ -72,6 +72,21 @@ func (s *Map[K, V]) Get(k K) (V, bool) {
 	return val, ok
 }
 
+// GetOrSet returns the existing value for the key if present.
+// Otherwise, it stores and returns the given value.
+// The loaded result is true if the value was loaded, false if stored.
+//
+// This method acquires a write lock to ensure safe concurrent access.
+func (s *Map[K, V]) GetOrSet(k K, v V) (actual V, loaded bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.data[k]; ok {
+		return existing, true
+	}
+	s.data[k] = v
+	return v, false
+}
+
 // Delete removes the key-value pair associated with the given key from the SyncMap.
 // If the key does not exist, this operation has no effect.
 //
@@ -95,7 +110,9 @@ func (s *Map[K, V]) Len() int {
 // Range iterates over all key-value pairs in the SyncMap and executes the given function `f`
 // for each pair. The iteration order is not guaranteed.
 //
-// This method acquires a read lock to ensure safe concurrent access.
+// This method holds the read lock for the whole iteration: `f` must not call any
+// method that acquires the write lock (Set, Delete, GetOrSet) on the same map,
+// otherwise it deadlocks. Collect the keys with Keys and mutate afterwards instead.
 func (s *Map[K, V]) Range(f func(K, V)) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

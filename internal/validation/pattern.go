@@ -24,6 +24,7 @@ package validation
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 )
 
@@ -33,6 +34,11 @@ type patternValidator struct {
 	pattern    string
 	expression string
 	customErr  error
+
+	// regex is compiled once at construction time
+	regex *regexp.Regexp
+	// compileErr holds the pattern compilation error, if any
+	compileErr error
 }
 
 var _ Validator = (*patternValidator)(nil)
@@ -40,16 +46,23 @@ var _ Validator = (*patternValidator)(nil)
 // NewPatternValidator creates an instance of the validator
 // The given pattern should be valid regular expression
 func NewPatternValidator(pattern, expression string, customErr error) Validator {
+	regex, err := regexp.Compile(pattern)
 	return &patternValidator{
 		pattern:    pattern,
 		expression: expression,
 		customErr:  customErr,
+		regex:      regex,
+		compileErr: err,
 	}
 }
 
 // Validate executes the validation
 func (x *patternValidator) Validate() error {
-	if match, _ := regexp.MatchString(x.pattern, x.expression); !match {
+	if x.compileErr != nil {
+		return fmt.Errorf("invalid pattern=(%s): %w", x.pattern, x.compileErr)
+	}
+
+	if !x.regex.MatchString(x.expression) {
 		if x.customErr != nil {
 			return x.customErr
 		}

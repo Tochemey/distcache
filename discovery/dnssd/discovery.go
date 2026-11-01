@@ -25,6 +25,7 @@ package dnssd
 import (
 	"context"
 	"net"
+	"strconv"
 	"sync"
 
 	goset "github.com/deckarep/golang-set/v3"
@@ -34,8 +35,14 @@ import (
 )
 
 const (
+	// DomainName is kept for backward compatibility.
+	//
+	// Deprecated: it is not used by the provider and will be removed in a future release.
 	DomainName = "domain-name"
-	IPv6       = "ipv6"
+	// IPv6 is kept for backward compatibility.
+	//
+	// Deprecated: it is not used by the provider and will be removed in a future release.
+	IPv6 = "ipv6"
 )
 
 // Discovery represents the DNS service discovery
@@ -45,8 +52,14 @@ type Discovery struct {
 	mu     sync.Mutex
 	config *Config
 
-	// states whether the actor system has started or not
+	// states whether the actor system has started or not.
+	// The pointer is set once at construction time and must never be replaced
+	// afterwards: use Load/Store so that readers stay race-free.
 	initialized *atomic.Bool
+
+	// resolver is the DNS resolver used to look up the domain name.
+	// When nil, a Go-based resolver is used. It is overridable for testing purposes.
+	resolver *net.Resolver
 }
 
 // enforce compilation error
@@ -86,7 +99,7 @@ func (d *Discovery) Register() error {
 		return discovery.ErrAlreadyRegistered
 	}
 
-	d.initialized = atomic.NewBool(true)
+	d.initialized.Store(true)
 	return nil
 }
 
@@ -98,7 +111,7 @@ func (d *Discovery) Deregister() error {
 	if !d.initialized.Load() {
 		return discovery.ErrNotInitialized
 	}
-	d.initialized = atomic.NewBool(false)
+	d.initialized.Store(false)
 	return nil
 }
 
@@ -111,47 +124,38 @@ func (d *Discovery) DiscoverPeers() ([]string, error) {
 		return nil, discovery.ErrNotInitialized
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), d.config.timeout())
+	defer cancel()
 
 	// set ipv6 filter
-	v6 := false
-	if d.config.IPv6 != nil {
-		v6 = *d.config.IPv6
+	network := "ip"
+	if d.config.IPv6 != nil && *d.config.IPv6 {
+		network = "ip6"
 	}
 
-	var err error
-
-	resolver := &net.Resolver{
-		PreferGo: true, // Prefer Go's DNS resolver
-	}
-
-	// only extract ipv6
-	if v6 {
-		ips, err := resolver.LookupIP(ctx, "ip6", d.config.DomainName)
-		if err != nil {
-			return nil, err
+	resolver := d.resolver
+	if resolver == nil {
+		resolver = &net.Resolver{
+			PreferGo: true, // Prefer Go's DNS resolver
 		}
-
-		ipList := make([]string, len(ips))
-		for index, ip := range ips {
-			ipList[index] = ip.String()
-		}
-
-		return goset.NewSet[string](ipList...).ToSlice(), nil
 	}
 
 	// lookup the addresses based upon the dns name
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, d.config.DomainName)
+	ips, err := resolver.LookupIP(ctx, network, d.config.DomainName)
 	if err != nil {
 		return nil, err
 	}
 
-	ipList := make([]string, len(addrs))
-	for index, addr := range addrs {
-		ipList[index] = addr.IP.String()
+	addresses := goset.NewSet[string]()
+	for _, ip := range ips {
+		if d.config.Port > 0 {
+			addresses.Add(net.JoinHostPort(ip.String(), strconv.Itoa(d.config.Port)))
+			continue
+		}
+		addresses.Add(ip.String())
 	}
 
-	return goset.NewSet[string](ipList...).ToSlice(), nil
+	return addresses.ToSlice(), nil
 }
 
 // Close closes the provider

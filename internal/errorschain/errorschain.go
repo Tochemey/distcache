@@ -106,22 +106,7 @@ func (c *Chain) AddContextRunnerIf(condition bool, fn func(ctx context.Context) 
 	if !condition {
 		return c
 	}
-
-	if c.returnFirst {
-		if c.err != nil {
-			return c
-		}
-		if err := fn(c.ctx); err != nil {
-			c.err = err
-		}
-		return c
-	}
-
-	if err := fn(c.ctx); err != nil {
-		multierr.AppendInto(&c.err, err)
-	}
-
-	return c
+	return c.AddContextRunner(fn)
 }
 
 // Run returns the error

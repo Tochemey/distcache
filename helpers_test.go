@@ -296,6 +296,8 @@ func (x *MockDaemon) Shutdown(_ context.Context) error {
 	return nil
 }
 
+func (x *MockDaemon) GetInstance() *groupcache.Instance { return nil }
+
 func (x *MockDaemon) setPeersCallsLen() int {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -319,6 +321,8 @@ func (x *MockFailOnceDaemon) NewGroup(name string, maxBytes int64, getter groupc
 func (x *MockFailOnceDaemon) RemoveGroup(string) {}
 
 func (x *MockFailOnceDaemon) Shutdown(context.Context) error { return nil }
+
+func (x *MockFailOnceDaemon) GetInstance() *groupcache.Instance { return nil }
 
 type MockGroup struct {
 	mu              sync.Mutex

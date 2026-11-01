@@ -24,6 +24,8 @@ package syncmap
 
 import (
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -92,4 +94,45 @@ func TestKeys(t *testing.T) {
 	assert.Exactly(t, 2, len(keys))
 	slices.Sort(keys)
 	assert.ElementsMatch(t, []int{1, 2}, keys)
+}
+
+func TestGetOrSet(t *testing.T) {
+	sm := New[string, int]()
+
+	// first call stores the value
+	actual, loaded := sm.GetOrSet("a", 1)
+	require.False(t, loaded)
+	require.Equal(t, 1, actual)
+
+	// second call returns the existing value and ignores the new one
+	actual, loaded = sm.GetOrSet("a", 2)
+	require.True(t, loaded)
+	require.Equal(t, 1, actual)
+
+	val, ok := sm.Get("a")
+	require.True(t, ok)
+	require.Equal(t, 1, val)
+	assert.Exactly(t, 1, sm.Len())
+}
+
+func TestGetOrSetConcurrent(t *testing.T) {
+	sm := New[string, int]()
+	const workers = 50
+
+	var wg sync.WaitGroup
+	var stored atomic.Int32
+	for i := range workers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, loaded := sm.GetOrSet("key", i); !loaded {
+				stored.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// exactly one goroutine must have won the store
+	assert.Equal(t, int32(1), stored.Load())
+	assert.Exactly(t, 1, sm.Len())
 }

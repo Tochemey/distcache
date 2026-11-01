@@ -50,6 +50,15 @@ func (s *keySpaceWrapper) negativeCachingEnabled() bool {
 	return s.config.NegativeTTL > 0
 }
 
+// expiryFor returns the effective expiry for an entry: the explicit value when
+// set, otherwise now plus the keyspace DefaultTTL, otherwise zero (no expiry).
+func (s *keySpaceWrapper) expiryFor(explicit time.Time) time.Time {
+	if explicit.IsZero() && s.config.DefaultTTL > 0 {
+		return time.Now().Add(s.config.DefaultTTL)
+	}
+	return explicit
+}
+
 func (s *keySpaceWrapper) wrap(value []byte) ([]byte, error) {
 	if !s.negativeCachingEnabled() {
 		return value, nil
@@ -168,15 +177,11 @@ func (x *engine) createGroup(spec *keySpaceWrapper) (transport.Group, error) {
 				}
 				return err
 			}
-			expiredAt := spec.keyspace.ExpiresAt(ctx, id)
-			if expiredAt.IsZero() && spec.config.DefaultTTL > 0 {
-				expiredAt = time.Now().Add(spec.config.DefaultTTL)
-			}
 			wrapped, err := spec.wrap(bytea)
 			if err != nil {
 				return err
 			}
-			return dest.SetBytes(wrapped, expiredAt)
+			return dest.SetBytes(wrapped, spec.expiryFor(spec.keyspace.ExpiresAt(ctx, id)))
 		}))
 
 	if err != nil {

@@ -25,6 +25,7 @@ package nats
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"strconv"
@@ -36,8 +37,14 @@ import (
 	"go.uber.org/atomic"
 
 	"github.com/tochemey/distcache/discovery"
+	"github.com/tochemey/distcache/internal/validation"
 	"github.com/tochemey/distcache/log"
 )
+
+// replyChannelSize defines the buffer size of the inbox channel used
+// to collect peers responses. nats.go drops messages when the channel
+// is full, so the buffer is generous on purpose.
+const replyChannelSize = 1024
 
 // Discovery represents the kubernetes discovery
 type Discovery struct {
@@ -112,27 +119,30 @@ func (d *Discovery) Initialize() error {
 	opts.ReconnectWait = d.config.ReconnectWait
 	opts.MaxReconnect = -1
 
-	var (
-		connection *nats.Conn
-		err        error
-	)
+	var connection *nats.Conn
 
 	// let us connect using an exponential backoff mechanism
-	// create a new instance of retrier that will try a maximum of five times, with
+	// create a new instance of retrier that will try a maximum of MaxJoinAttempts times, with
 	// an initial delay of 100 ms and a maximum delay of opts.ReconnectWait
-	err = retry.
+	err := retry.
 		NewRetrier(d.config.MaxJoinAttempts, 100*time.Millisecond, opts.ReconnectWait).
 		Run(func() error {
+			var err error
 			connection, err = opts.Connect()
-			if err != nil {
-				return err
-			}
-			return nil
+			return err
 		})
+
+	if err != nil {
+		return fmt.Errorf("failed to connect to the NATS server %s: %w", d.config.Server, err)
+	}
+
+	if connection == nil {
+		return fmt.Errorf("failed to connect to the NATS server %s", d.config.Server)
+	}
 
 	// create the NATs connection
 	d.connection = connection
-	d.initialized = atomic.NewBool(true)
+	d.initialized.Store(true)
 	return nil
 }
 
@@ -143,6 +153,10 @@ func (d *Discovery) Register() error {
 
 	if d.registered.Load() {
 		return discovery.ErrAlreadyRegistered
+	}
+
+	if d.connection == nil {
+		return discovery.ErrNotInitialized
 	}
 
 	// create the subscription handler
@@ -179,8 +193,15 @@ func (d *Discovery) Register() error {
 		return err
 	}
 
+	// make sure the subscription is active on the server before reporting success,
+	// otherwise peers requests published right after Register could be missed
+	if err := d.connection.Flush(); err != nil {
+		_ = subscription.Unsubscribe()
+		return fmt.Errorf("failed to flush the NATS subscription: %w", err)
+	}
+
 	d.subscriptions = append(d.subscriptions, subscription)
-	d.registered = atomic.NewBool(true)
+	d.registered.Store(true)
 	return nil
 }
 
@@ -208,6 +229,7 @@ func (d *Discovery) Deregister() error {
 		}
 	}
 
+	var err error
 	// send the de-registration message to notify peers
 	if d.connection != nil {
 		// send a message to deregister stating we are out
@@ -219,10 +241,14 @@ func (d *Discovery) Deregister() error {
 		}
 
 		bytea, _ := json.Marshal(message)
-		return d.connection.Publish(d.config.Subject, bytea)
+		err = d.connection.Publish(d.config.Subject, bytea)
 	}
+
+	// reset the registration state regardless of the publish outcome
+	// so that a subsequent Register call can succeed
+	d.subscriptions = nil
 	d.registered.Store(false)
-	return nil
+	return err
 }
 
 // DiscoverPeers returns a list of known nodes.
@@ -242,13 +268,18 @@ func (d *Discovery) DiscoverPeers() ([]string, error) {
 	// report their presence.
 	// collect as many responses as possible in the given timeout.
 	inbox := nats.NewInbox()
-	msgCh := make(chan *nats.Msg, 1)
+	msgCh := make(chan *nats.Msg, replyChannelSize)
 
 	// bind to receive messages
 	sub, err := d.connection.ChanSubscribe(inbox, msgCh)
 	if err != nil {
 		return nil, err
 	}
+
+	// make sure the inbox subscription never leaks whatever the exit path
+	defer func() {
+		_ = sub.Unsubscribe()
+	}()
 
 	request := &Message{
 		Host: d.config.Host,
@@ -263,6 +294,7 @@ func (d *Discovery) DiscoverPeers() ([]string, error) {
 	}
 
 	var peers []string
+	seen := make(map[string]struct{})
 	timeout := time.After(d.config.Timeout)
 	me := net.JoinHostPort(d.config.Host, strconv.Itoa(int(d.config.DiscoveryPort)))
 	for {
@@ -284,11 +316,22 @@ func (d *Discovery) DiscoverPeers() ([]string, error) {
 				continue
 			}
 
+			// never trust a peer-supplied address blindly
+			if err := validation.NewTCPAddressValidator(addr).Validate(); err != nil {
+				d.logger.Warnf("skipping invalid peer address=(%s): %v", addr, err)
+				continue
+			}
+
+			// dedupe
+			if _, exists := seen[addr]; exists {
+				continue
+			}
+
+			seen[addr] = struct{}{}
 			peers = append(peers, addr)
 
 		case <-timeout:
-			_ = sub.Unsubscribe()
-			close(msgCh)
+			return peers, nil
 		}
 	}
 }
@@ -317,6 +360,7 @@ func (d *Discovery) Close() error {
 			}
 		}
 
+		d.subscriptions = nil
 		return d.connection.Flush()
 	}
 	return nil

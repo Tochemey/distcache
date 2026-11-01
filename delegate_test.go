@@ -40,4 +40,3 @@ func TestDelegateMetadata(t *testing.T) {
 		d.MergeRemoteState([]byte("state"), true)
 	})
 }
-

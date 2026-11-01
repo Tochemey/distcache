@@ -33,7 +33,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/travisjeffery/go-dynaport"
-	"go.uber.org/atomic"
 
 	"github.com/tochemey/distcache/discovery"
 )
@@ -204,7 +203,7 @@ func TestDiscovery(t *testing.T) {
 
 		// create the instance of provider
 		provider := NewDiscovery(config)
-		provider.initialized = atomic.NewBool(true)
+		provider.initialized.Store(true)
 		assert.Error(t, provider.Initialize())
 	})
 	t.Run("With Register: already registered", func(t *testing.T) {
@@ -232,7 +231,7 @@ func TestDiscovery(t *testing.T) {
 
 		// create the instance of provider
 		provider := NewDiscovery(config)
-		provider.registered = atomic.NewBool(true)
+		provider.registered.Store(true)
 		err := provider.Register()
 		assert.Error(t, err)
 		assert.EqualError(t, err, discovery.ErrAlreadyRegistered.Error())
@@ -308,13 +307,12 @@ func TestDiscovery(t *testing.T) {
 		discoveredNodeAddr = net.JoinHostPort(client1.config.Host, strconv.Itoa(int(client1.config.DiscoveryPort)))
 		require.Equal(t, peers[0], discoveredNodeAddr)
 
-		// de-register client 2 but it can see client1
+		// de-register client 2: it is no longer registered so it cannot discover peers
 		require.NoError(t, client2.Deregister())
 		peers, err = client2.DiscoverPeers()
-		require.NoError(t, err)
-		require.NotEmpty(t, peers)
-		discoveredNodeAddr = net.JoinHostPort(client1.config.Host, strconv.Itoa(int(client1.config.DiscoveryPort)))
-		require.Equal(t, peers[0], discoveredNodeAddr)
+		require.Error(t, err)
+		require.EqualError(t, err, discovery.ErrNotRegistered.Error())
+		require.Empty(t, peers)
 
 		// client-1 cannot see the deregistered client
 		peers, err = client1.DiscoverPeers()
@@ -364,4 +362,65 @@ func TestDiscovery(t *testing.T) {
 		err := provider.Initialize()
 		assert.Error(t, err)
 	})
+}
+
+func TestInitializeConnectFailure(t *testing.T) {
+	// nothing listens on this port: the connection must fail with an error and never panic
+	config := &Config{
+		Server:          "nats://127.0.0.1:1",
+		Subject:         "some-subject",
+		Host:            "127.0.0.1",
+		DiscoveryPort:   dynaport.Get(1)[0],
+		MaxJoinAttempts: 2,
+		ReconnectWait:   50 * time.Millisecond,
+	}
+
+	provider := NewDiscovery(config)
+	var err error
+	require.NotPanics(t, func() {
+		err = provider.Initialize()
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to connect to the NATS server")
+	assert.False(t, provider.initialized.Load())
+	assert.Nil(t, provider.connection)
+
+	// the provider must still be usable without panicking
+	peers, err := provider.DiscoverPeers()
+	require.Error(t, err)
+	assert.Empty(t, peers)
+	assert.EqualError(t, err, discovery.ErrNotInitialized.Error())
+	assert.EqualError(t, provider.Register(), discovery.ErrNotInitialized.Error())
+	assert.NoError(t, provider.Close())
+}
+
+func TestRegisterAfterDeregister(t *testing.T) {
+	srv := startNatsServer(t)
+	t.Cleanup(srv.Shutdown)
+
+	provider := newPeer(t, srv.Addr().String())
+	require.NoError(t, provider.Register())
+	require.True(t, provider.registered.Load())
+	require.Len(t, provider.subscriptions, 1)
+
+	require.NoError(t, provider.Deregister())
+	require.False(t, provider.registered.Load())
+	require.Empty(t, provider.subscriptions)
+
+	// registering again must succeed
+	require.NoError(t, provider.Register())
+	require.True(t, provider.registered.Load())
+	require.Len(t, provider.subscriptions, 1)
+
+	// and discovery still works with a second peer
+	other := newPeer(t, srv.Addr().String())
+	require.NoError(t, other.Register())
+
+	peers, err := provider.DiscoverPeers()
+	require.NoError(t, err)
+	require.Len(t, peers, 1)
+	require.Equal(t, net.JoinHostPort(other.config.Host, strconv.Itoa(other.config.DiscoveryPort)), peers[0])
+
+	require.NoError(t, provider.Close())
+	require.NoError(t, other.Close())
 }

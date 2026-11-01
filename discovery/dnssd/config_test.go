@@ -24,6 +24,7 @@ package dnssd
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -39,6 +40,20 @@ func TestConfig(t *testing.T) {
 		config := &Config{
 			DomainName: "",
 		}
-		assert.Error(t, config.Validate())
+		err := config.Validate()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "DomainName")
+	})
+	t.Run("With invalid port", func(t *testing.T) {
+		assert.Error(t, Config{DomainName: "google.com", Port: -1}.Validate())
+		assert.Error(t, Config{DomainName: "google.com", Port: 70000}.Validate())
+		assert.NoError(t, Config{DomainName: "google.com", Port: 8080}.Validate())
+	})
+	t.Run("With invalid timeout", func(t *testing.T) {
+		assert.Error(t, Config{DomainName: "google.com", Timeout: -time.Second}.Validate())
+	})
+	t.Run("With timeout default", func(t *testing.T) {
+		assert.Equal(t, DefaultTimeout, Config{}.timeout())
+		assert.Equal(t, time.Second, Config{Timeout: time.Second}.timeout())
 	})
 }

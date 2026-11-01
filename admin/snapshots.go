@@ -34,9 +34,11 @@ import (
 //
 // It combines configuration (capacity, TTL, read/write timeouts, warm keys)
 // with runtime cache sizing and optional stats derived from the underlying
-// group implementation. Time-based fields are serialized using time.Duration's
-// string form (for example, "500ms"). Stats is nil when the group does not
-// expose counters, so callers should treat it as optional.
+// group implementation. Duration fields (DefaultTTL, ReadTimeout,
+// WriteTimeout) are serialized by encoding/json as time.Duration's underlying
+// int64, i.e. a count of nanoseconds (for example, 500ms is 500000000). Stats
+// is nil when the group does not expose counters, so callers should treat it
+// as optional.
 type KeySpaceSnapshot struct {
 	Name           string                 `json:"name"`
 	MaxBytes       int64                  `json:"max_bytes"`

@@ -48,94 +48,60 @@ type Log struct {
 // enforce compilation and linter error
 var _ Logger = &Log{}
 
-// New creates an instance of Log
-// New creates an instance of Log
+// encoderConfig is the zap encoder configuration shared by every Log instance.
+// It is copied from "zap.NewProductionEncoderConfig" with some updates.
+var encoderConfig = zapcore.EncoderConfig{
+	TimeKey:       "ts",
+	LevelKey:      "level",
+	NameKey:       "logger",
+	CallerKey:     "caller",
+	MessageKey:    "msg",
+	StacktraceKey: "stacktrace",
+	LineEnding:    zapcore.DefaultLineEnding,
+	EncodeLevel:   zapcore.LowercaseLevelEncoder,
+
+	// Custom EncodeTime function to ensure we match format and precision of historic capnslog timestamps
+	EncodeTime: func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+		enc.AppendString(t.Format("2006-01-02T15:04:05.000000Z0700"))
+	},
+
+	EncodeDuration: zapcore.StringDurationEncoder,
+	EncodeCaller:   zapcore.ShortCallerEncoder,
+}
+
+// zapLevels maps the Log levels to their zap counterparts.
+var zapLevels = map[Level]zapcore.Level{
+	InfoLevel:    zapcore.InfoLevel,
+	DebugLevel:   zapcore.DebugLevel,
+	WarningLevel: zapcore.WarnLevel,
+	ErrorLevel:   zapcore.ErrorLevel,
+	PanicLevel:   zapcore.PanicLevel,
+	FatalLevel:   zapcore.FatalLevel,
+}
+
+// New creates an instance of Log.
+//
+// The returned logger is self-contained: it does not touch zap's global
+// logger nor the standard library's log package.
 func New(level Level, writers ...io.Writer) *Log {
-	// create the zap Log configuration
-	cfg := zap.Config{
-		Development: false,
-		Sampling: &zap.SamplingConfig{
-			Initial:    100,
-			Thereafter: 100,
-		},
-		Encoding: "json",
-		// copied from "zap.NewProductionEncoderConfig" with some updates
-		EncoderConfig: zapcore.EncoderConfig{
-			TimeKey:       "ts",
-			LevelKey:      "level",
-			NameKey:       "logger",
-			CallerKey:     "caller",
-			MessageKey:    "msg",
-			StacktraceKey: "stacktrace",
-			LineEnding:    zapcore.DefaultLineEnding,
-			EncodeLevel:   zapcore.LowercaseLevelEncoder,
-
-			// Custom EncodeTime function to ensure we match format and precision of historic capnslog timestamps
-			EncodeTime: func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
-				enc.AppendString(t.Format("2006-01-02T15:04:05.000000Z0700"))
-			},
-
-			EncodeDuration: zapcore.StringDurationEncoder,
-			EncodeCaller:   zapcore.ShortCallerEncoder,
-		},
-		OutputPaths:      []string{"stderr"},
-		ErrorOutputPaths: []string{"stderr"},
-	}
-
-	// create the zap log core
-	var core zapcore.Core
-
 	// create the list of writers
 	syncWriters := make([]zapcore.WriteSyncer, len(writers))
 	for i, writer := range writers {
 		syncWriters[i] = zapcore.AddSync(writer)
 	}
 
-	// set the log level
-	switch level {
-	case InfoLevel:
-		core = zapcore.NewCore(
-			zapcore.NewJSONEncoder(cfg.EncoderConfig),
-			zap.CombineWriteSyncers(syncWriters...),
-			zapcore.InfoLevel,
-		)
-	case DebugLevel:
-		core = zapcore.NewCore(
-			zapcore.NewJSONEncoder(cfg.EncoderConfig),
-			zap.CombineWriteSyncers(syncWriters...),
-			zapcore.DebugLevel,
-		)
-	case WarningLevel:
-		core = zapcore.NewCore(
-			zapcore.NewJSONEncoder(cfg.EncoderConfig),
-			zap.CombineWriteSyncers(syncWriters...),
-			zapcore.WarnLevel,
-		)
-	case ErrorLevel:
-		core = zapcore.NewCore(
-			zapcore.NewJSONEncoder(cfg.EncoderConfig),
-			zap.CombineWriteSyncers(syncWriters...),
-			zapcore.ErrorLevel,
-		)
-	case PanicLevel:
-		core = zapcore.NewCore(
-			zapcore.NewJSONEncoder(cfg.EncoderConfig),
-			zap.CombineWriteSyncers(syncWriters...),
-			zapcore.PanicLevel,
-		)
-	case FatalLevel:
-		core = zapcore.NewCore(
-			zapcore.NewJSONEncoder(cfg.EncoderConfig),
-			zap.CombineWriteSyncers(syncWriters...),
-			zapcore.FatalLevel,
-		)
-	default:
-		core = zapcore.NewCore(
-			zapcore.NewJSONEncoder(cfg.EncoderConfig),
-			zap.CombineWriteSyncers(syncWriters...),
-			zapcore.DebugLevel,
-		)
+	// set the log level; unknown levels default to debug
+	zapLevel, ok := zapLevels[level]
+	if !ok {
+		zapLevel = zapcore.DebugLevel
 	}
+
+	core := zapcore.NewCore(
+		zapcore.NewJSONEncoder(encoderConfig),
+		zap.CombineWriteSyncers(syncWriters...),
+		zapLevel,
+	)
+
 	// get the zap Log
 	zapLogger := zap.New(core,
 		zap.AddCaller(),
@@ -144,8 +110,6 @@ func New(level Level, writers ...io.Writer) *Log {
 		zap.AddStacktrace(zapcore.ErrorLevel),
 		zap.AddStacktrace(zapcore.FatalLevel))
 
-	// set the global logger
-	zap.ReplaceGlobals(zapLogger)
 	// create the instance of Log and returns it
 	return &Log{
 		logger:  zapLogger,
@@ -242,10 +206,14 @@ func (l *Log) LogOutput() []io.Writer {
 	return l.outputs
 }
 
-// StdLogger returns the standard logger associated to the logger
+// StdLogger returns a standard library logger that writes through this
+// logger at its configured level. It does not redirect the global standard
+// library logger.
 func (l *Log) StdLogger() *golog.Logger {
-	stdlogger, _ := zap.NewStdLogAt(l.logger, l.logger.Level())
-	redirect, _ := zap.RedirectStdLogAt(l.logger, l.logger.Level())
-	defer redirect()
+	stdlogger, err := zap.NewStdLogAt(l.logger, l.logger.Level())
+	if err != nil {
+		// fall back to a plain standard logger writing to the same outputs
+		return golog.New(io.MultiWriter(l.outputs...), "", golog.LstdFlags)
+	}
 	return stdlogger
 }

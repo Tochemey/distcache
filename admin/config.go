@@ -24,11 +24,17 @@ package admin
 
 import (
 	"crypto/tls"
+	"net/http"
 	"strings"
 	"time"
 )
 
 // Config configures the diagnostic HTTP server.
+//
+// The admin server has no built-in authentication or authorization: anyone
+// who can reach ListenAddr can read peer and keyspace snapshots. Bind it to a
+// loopback address or an isolated management network, and/or wrap the
+// endpoints with your own authentication using Middleware.
 type Config struct {
 	// ListenAddr specifies the address to bind for diagnostics.
 	ListenAddr string
@@ -42,6 +48,10 @@ type Config struct {
 	IdleTimeout time.Duration
 	// TLSConfig enables HTTPS when non-nil.
 	TLSConfig *tls.Config
+	// Middleware, when non-nil, wraps the whole admin handler. It is the
+	// extension point for authentication, request logging, rate limiting and
+	// similar cross-cutting concerns. A nil Middleware applies no wrapping.
+	Middleware func(http.Handler) http.Handler
 }
 
 // Normalize returns a configuration with defaults applied.

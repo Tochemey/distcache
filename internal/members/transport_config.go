@@ -41,10 +41,27 @@ type TransportConfig struct {
 	PacketDialTimeout  time.Duration
 	PacketWriteTimeout time.Duration
 
+	// PacketReadTimeout bounds how long the transport waits for an incoming
+	// connection to deliver its first message type byte and, for packets, its full payload.
+	// When zero, PacketWriteTimeout is used; when both are zero a default of 10s applies.
+	PacketReadTimeout time.Duration
+
 	// Logger is a logger for operator messages.
 	Logger log.Logger
 
 	TLSEnabled   bool
 	TLS          *tls.Config
 	DebugEnabled bool
+}
+
+// readTimeout returns the effective read timeout applied to incoming connections
+func (c TransportConfig) readTimeout() time.Duration {
+	switch {
+	case c.PacketReadTimeout > 0:
+		return c.PacketReadTimeout
+	case c.PacketWriteTimeout > 0:
+		return c.PacketWriteTimeout
+	default:
+		return defaultPacketReadTimeout
+	}
 }

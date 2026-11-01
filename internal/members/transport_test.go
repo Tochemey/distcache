@@ -23,9 +23,12 @@
 package members
 
 import (
+	"crypto/md5" // nolint
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -40,6 +43,7 @@ import (
 	"github.com/travisjeffery/go-dynaport"
 
 	util "github.com/tochemey/distcache/internal/pause"
+	dlog "github.com/tochemey/distcache/log"
 )
 
 // nolint
@@ -329,3 +333,225 @@ func (d *delegate) LocalState(join bool) []byte {
 
 // nolint
 func (d *delegate) MergeRemoteState(buf []byte, join bool) {}
+
+// newRawTransport starts a transport on the loopback interface for raw wire tests
+func newRawTransport(t *testing.T, config TransportConfig) *Transport {
+	t.Helper()
+	config.BindAddrs = []string{"127.0.0.1"}
+	config.BindPort = 0
+	transport, err := NewTransport(config)
+	require.NoError(t, err)
+	require.NotNil(t, transport)
+	return transport
+}
+
+// dialRaw opens a raw TCP connection to the given transport
+func dialRaw(t *testing.T, transport *Transport) net.Conn {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", transport.tcpListeners[0].Addr().String(), time.Second)
+	require.NoError(t, err)
+	return conn
+}
+
+// sendRawPacket writes a complete packet frame with the given payload and digest, then closes the connection
+func sendRawPacket(t *testing.T, transport *Transport, payload, digest []byte) {
+	t.Helper()
+	conn := dialRaw(t, transport)
+	from := "127.0.0.1:1"
+	header := append([]byte{byte(packet), byte(len(from))}, []byte(from)...)
+	_, err := conn.Write(header)
+	require.NoError(t, err)
+	_, err = conn.Write(payload)
+	require.NoError(t, err)
+	_, err = conn.Write(digest)
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+}
+
+func receivePacket(t *testing.T, transport *Transport, timeout time.Duration) *memberlist.Packet {
+	t.Helper()
+	select {
+	case pkt := <-transport.PacketCh():
+		return pkt
+	case <-time.After(timeout):
+		return nil
+	}
+}
+
+func TestTransportConfiguredLoggerIsUsed(t *testing.T) {
+	logger := dlog.New(dlog.InfoLevel, io.Discard)
+	transport := newRawTransport(t, TransportConfig{Logger: logger, DebugEnabled: true})
+	defer func() { assert.NoError(t, transport.Shutdown()) }()
+
+	assert.Same(t, logger, transport.logger)
+	// debug logging goes through the configured logger too
+	assert.Same(t, logger, transport.debugLogger())
+
+	// without debug the discard logger is returned
+	transport.config.DebugEnabled = false
+	assert.Same(t, dlog.DiscardLogger, transport.debugLogger())
+}
+
+func TestTransportDefaultLoggerWhenNoneConfigured(t *testing.T) {
+	transport := newRawTransport(t, TransportConfig{})
+	defer func() { assert.NoError(t, transport.Shutdown()) }()
+	require.NotNil(t, transport.logger)
+}
+
+func TestTransportTLSEnabledWithoutConfig(t *testing.T) {
+	transport, err := NewTransport(TransportConfig{
+		BindAddrs:  []string{"127.0.0.1"},
+		TLSEnabled: true,
+	})
+	require.Error(t, err)
+	require.Nil(t, transport)
+	assert.Contains(t, err.Error(), "TLS is enabled but no TLS configuration is provided")
+}
+
+func TestTransportDigestMismatchIsDropped(t *testing.T) {
+	transport := newRawTransport(t, TransportConfig{Logger: dlog.DiscardLogger})
+	defer func() { assert.NoError(t, transport.Shutdown()) }()
+
+	payload := []byte("hello memberlist")
+	bogus := make([]byte, md5.Size)
+
+	// a corrupted packet must never be delivered
+	sendRawPacket(t, transport, payload, bogus)
+	require.Nil(t, receivePacket(t, transport, 500*time.Millisecond))
+
+	// a valid packet is delivered
+	digest := md5.Sum(payload) // nolint
+	sendRawPacket(t, transport, payload, digest[:])
+	pkt := receivePacket(t, transport, 2*time.Second)
+	require.NotNil(t, pkt)
+	assert.Equal(t, payload, pkt.Buf)
+	assert.Equal(t, "127.0.0.1:1", pkt.From.String())
+}
+
+func TestTransportOversizedPacketIsRejected(t *testing.T) {
+	transport := newRawTransport(t, TransportConfig{Logger: dlog.DiscardLogger})
+	defer func() { assert.NoError(t, transport.Shutdown()) }()
+
+	// payload + digest exceeds the maximum packet size by one byte
+	payload := make([]byte, maxPacketSize-md5.Size+1)
+	digest := md5.Sum(payload) // nolint
+	sendRawPacket(t, transport, payload, digest[:])
+	require.Nil(t, receivePacket(t, transport, 500*time.Millisecond))
+
+	// payload + digest exactly at the maximum packet size is accepted
+	payload = make([]byte, maxPacketSize-md5.Size)
+	digest = md5.Sum(payload) // nolint
+	sendRawPacket(t, transport, payload, digest[:])
+	pkt := receivePacket(t, transport, 2*time.Second)
+	require.NotNil(t, pkt)
+	assert.Len(t, pkt.Buf, maxPacketSize-md5.Size)
+}
+
+func TestTransportReadDeadlineFiresOnStalledConnection(t *testing.T) {
+	transport := newRawTransport(t, TransportConfig{
+		Logger:            dlog.DiscardLogger,
+		PacketReadTimeout: 200 * time.Millisecond,
+	})
+	defer func() { assert.NoError(t, transport.Shutdown()) }()
+
+	conn := dialRaw(t, transport)
+	defer conn.Close()
+
+	// announce a packet and then stall forever
+	_, err := conn.Write([]byte{byte(packet)})
+	require.NoError(t, err)
+
+	// the transport must give up and close the connection
+	start := time.Now()
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, err = conn.Read(make([]byte, 1))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, io.EOF)
+	assert.Less(t, time.Since(start), 3*time.Second)
+	require.Nil(t, receivePacket(t, transport, 100*time.Millisecond))
+}
+
+func TestTransportShutdownWithInFlightConnection(t *testing.T) {
+	transport := newRawTransport(t, TransportConfig{Logger: dlog.DiscardLogger})
+
+	// open a stream connection that nobody will ever consume from StreamCh
+	conn := dialRaw(t, transport)
+	defer conn.Close()
+	_, err := conn.Write([]byte{byte(stream)})
+	require.NoError(t, err)
+
+	// a packet handler blocked on PacketCh as well
+	payload := []byte("in-flight")
+	digest := md5.Sum(payload) // nolint
+	sendRawPacket(t, transport, payload, digest[:])
+
+	// let the handlers reach their blocking sends
+	util.Pause(300 * time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() { done <- transport.Shutdown() }()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return with in-flight connections")
+	}
+
+	// the stream connection has been closed by the transport
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	_, err = conn.Read(make([]byte, 1))
+	require.Error(t, err)
+
+	// Shutdown is idempotent
+	assert.NoError(t, transport.Shutdown())
+}
+
+func TestTransportFinalAdvertiseAddrWithIPv6Wildcard(t *testing.T) {
+	transport, err := NewTransport(TransportConfig{
+		BindAddrs: []string{"::"},
+		BindPort:  0,
+	})
+	if err != nil {
+		t.Skipf("IPv6 wildcard bind not available: %v", err)
+	}
+	defer func() { assert.NoError(t, transport.Shutdown()) }()
+
+	ip, port, err := transport.FinalAdvertiseAddr("", 0)
+	require.NoError(t, err)
+	require.NotNil(t, ip)
+	// the unspecified address must never be advertised
+	assert.False(t, ip.IsUnspecified())
+	assert.Equal(t, transport.GetAutoBindPort(), port)
+}
+
+func TestTransportShutdownClosesStalledConnections(t *testing.T) {
+	transport := newRawTransport(t, TransportConfig{
+		Logger:            dlog.DiscardLogger,
+		PacketReadTimeout: 30 * time.Second,
+	})
+
+	// a peer that connects and never sends anything
+	conn := dialRaw(t, transport)
+	defer conn.Close()
+
+	// let the handler reach its blocking read
+	util.Pause(200 * time.Millisecond)
+
+	begin := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- transport.Shutdown() }()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown waited for the stalled connection's read deadline")
+	}
+	require.Less(t, time.Since(begin), 5*time.Second)
+
+	// the stalled connection has been closed by the transport
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	_, err := conn.Read(make([]byte, 1))
+	require.Error(t, err)
+}

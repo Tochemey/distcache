@@ -37,6 +37,16 @@ var ErrDataSourceRateLimited = errors.New("data source rate limit exceeded")
 // ErrDataSourceCircuitOpen indicates that the data source circuit breaker is open.
 var ErrDataSourceCircuitOpen = errors.New("data source circuit breaker open")
 
+// ErrEngineAlreadyStarted is returned by Start when the engine is already running.
+var ErrEngineAlreadyStarted = errors.New("engine already started")
+
+// ErrEngineNotStarted is returned by keyspace mutators (DeleteKeySpace,
+// DeleteKeyspaces, UpdateKeySpace) when the engine is not running.
+var ErrEngineNotStarted = errors.New("engine not started")
+
+// ErrNilEntry is returned by Put and PutMany when an entry is nil.
+var ErrNilEntry = errors.New("entry is nil")
+
 // ErrNotFound indicates that a key does not exist in the upstream data source.
 //
 // DataSource implementations should return this error (directly or wrapped via

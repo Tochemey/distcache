@@ -467,7 +467,7 @@ func (c Config) Validate() error {
 		AddAssertion(len(c.keySpaces) > 0, "keySpaces are required").
 		AddAssertion(c.hasher != nil, "hasher is required").
 		AddAssertion(c.minimumPeersQuorum > 0, "minimumPeersQuorum is required").
-		AddValidator(validation.NewConditionalValidator(c.ifname == "", validation.NewEmptyStringValidator(c.bindAddr, "bindAddr"))).
+		AddValidator(validation.NewConditionalValidator(c.ifname == "", validation.NewEmptyStringValidator("bindAddr", c.bindAddr))).
 		AddValidator(validation.NewConditionalValidator(c.ifname == "", validation.NewTCPAddressValidator(net.JoinHostPort(c.bindAddr, strconv.Itoa(c.bindPort))))).
 		AddValidator(validation.NewConditionalValidator(c.ifname == "", validation.NewTCPAddressValidator(net.JoinHostPort(c.bindAddr, strconv.Itoa(c.discoveryPort)))))
 
@@ -479,7 +479,7 @@ func (c Config) Validate() error {
 			seenKeySpaces[keySpace.Name()] = struct{}{}
 		}
 		chain = chain.
-			AddValidator(validation.NewEmptyStringValidator(keySpace.Name(), "keySpace.Name")).
+			AddValidator(validation.NewEmptyStringValidator("keySpace.Name", keySpace.Name())).
 			AddAssertion(keySpace.DataSource() != nil, "keySpace.DataSource is required").
 			AddAssertion(keySpace.MaxBytes() != 0, "keySpace.MaxBytes is required")
 	}

@@ -22,7 +22,15 @@
 
 package kubernetes
 
-import "github.com/tochemey/distcache/internal/validation"
+import (
+	"time"
+
+	"github.com/tochemey/distcache/internal/validation"
+)
+
+// DefaultTimeout is the default timeout applied to the kubernetes API calls
+// when Config.Timeout is not set.
+const DefaultTimeout = 10 * time.Second
 
 // Config defines the kubernetes discovery configuration
 type Config struct {
@@ -32,6 +40,9 @@ type Config struct {
 	DiscoveryPortName string
 	// PodLabels specifies the pod labels
 	PodLabels map[string]string
+	// Timeout specifies the maximum duration of a single kubernetes API call
+	// performed while discovering peers. When zero, DefaultTimeout is used.
+	Timeout time.Duration
 }
 
 // Validate checks whether the given discovery configuration is valid
@@ -40,5 +51,14 @@ func (x Config) Validate() error {
 		AddValidator(validation.NewEmptyStringValidator("Namespace", x.Namespace)).
 		AddValidator(validation.NewEmptyStringValidator("DiscoveryPortName", x.DiscoveryPortName)).
 		AddAssertion(len(x.PodLabels) > 0, "PodLabels are required").
+		AddAssertion(x.Timeout >= 0, "Timeout is invalid").
 		Validate()
+}
+
+// timeout returns the effective API call timeout
+func (x Config) timeout() time.Duration {
+	if x.Timeout <= 0 {
+		return DefaultTimeout
+	}
+	return x.Timeout
 }

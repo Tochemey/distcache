@@ -44,10 +44,12 @@ import (
 
 	"github.com/tochemey/distcache"
 	"github.com/tochemey/distcache/admin"
-	"github.com/tochemey/distcache/internal/size"
 	"github.com/tochemey/distcache/log"
 	"github.com/tochemey/distcache/warmup"
 )
+
+// MB is one mebibyte, used to size the keyspace.
+const MB = 1 << 20
 
 func main() {
 	ctx := context.Background()
@@ -59,7 +61,7 @@ func main() {
 	source := newProductsDataSource()
 	source.upsert("p1", "Widget")
 
-	keyspace := newProductsKeySpace("products", 10*size.MB, source)
+	keyspace := newProductsKeySpace("products", 10*MB, source)
 
 	// 32-byte AES-256 key. In production load this from a secret manager.
 	gossipSecret := []byte("0123456789abcdef0123456789abcdef")

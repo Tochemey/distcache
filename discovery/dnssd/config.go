@@ -22,7 +22,15 @@
 
 package dnssd
 
-import "github.com/tochemey/distcache/internal/validation"
+import (
+	"time"
+
+	"github.com/tochemey/distcache/internal/validation"
+)
+
+// DefaultTimeout is the default timeout applied to DNS lookups
+// when Config.Timeout is not set.
+const DefaultTimeout = 10 * time.Second
 
 // Config defines the discovery configuration
 type Config struct {
@@ -31,11 +39,28 @@ type Config struct {
 	// IPv6 states whether to fetch ipv6 address instead of ipv4
 	// if it is false then all addresses are extracted
 	IPv6 *bool
+	// Port specifies the port to combine with every discovered IP address.
+	// When greater than zero, DiscoverPeers returns host:port entries,
+	// otherwise it returns bare IP addresses.
+	Port int
+	// Timeout specifies the maximum duration of a DNS lookup.
+	// When zero, DefaultTimeout is used.
+	Timeout time.Duration
 }
 
 // Validate checks whether the given discovery configuration is valid
 func (x Config) Validate() error {
 	return validation.New(validation.FailFast()).
-		AddValidator(validation.NewEmptyStringValidator("Namespace", x.DomainName)).
+		AddValidator(validation.NewEmptyStringValidator("DomainName", x.DomainName)).
+		AddAssertion(x.Port >= 0 && x.Port <= 65535, "Port is invalid").
+		AddAssertion(x.Timeout >= 0, "Timeout is invalid").
 		Validate()
+}
+
+// timeout returns the effective lookup timeout
+func (x Config) timeout() time.Duration {
+	if x.Timeout <= 0 {
+		return DefaultTimeout
+	}
+	return x.Timeout
 }

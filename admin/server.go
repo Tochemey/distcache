@@ -31,7 +31,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/tochemey/distcache/log"
 )
@@ -68,6 +67,10 @@ func NewServer(cfg Config, provider SnapshotProvider, logger log.Logger) *Server
 }
 
 // Start begins serving the admin endpoints.
+//
+// Start returns once the listener is bound; requests are served on a
+// background goroutine until Shutdown is called. A nil error means the socket
+// is accepting connections.
 func (s *Server) Start(ctx context.Context) error {
 	if s.cfg.ListenAddr == "" {
 		return nil
@@ -77,15 +80,29 @@ func (s *Server) Start(ctx context.Context) error {
 		return errors.New("admin snapshot provider is required")
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	mux := http.NewServeMux()
-	handler := newHandler(s.cfg.BasePath, s.provider)
+	handler := newHandler(s.cfg.BasePath, s.provider, s.logger)
 	handler.register(mux)
 
+	var root http.Handler = mux
+	if s.cfg.Middleware != nil {
+		root = s.cfg.Middleware(mux)
+	}
+
 	s.server = &http.Server{
-		Handler:      mux,
+		Handler:      root,
 		ReadTimeout:  s.cfg.ReadTimeout,
 		WriteTimeout: s.cfg.WriteTimeout,
 		IdleTimeout:  s.cfg.IdleTimeout,
+	}
+	if s.logger != nil {
+		// route net/http's internal diagnostics (TLS handshake failures, bad
+		// requests) through the configured logger instead of the stdlib one
+		s.server.ErrorLog = s.logger.StdLogger()
 	}
 
 	listener, err := net.Listen("tcp", s.cfg.ListenAddr)
@@ -106,7 +123,7 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
-	return waitForAdminConnect(ctx, listener.Addr().String())
+	return nil
 }
 
 // Shutdown stops the admin HTTP server.
@@ -120,57 +137,54 @@ func (s *Server) Shutdown(ctx context.Context) error {
 type handler struct {
 	basePath string
 	provider SnapshotProvider
+	logger   log.Logger
 }
 
-func newHandler(basePath string, provider SnapshotProvider) *handler {
+func newHandler(basePath string, provider SnapshotProvider, logger log.Logger) *handler {
+	prefix := "/" + strings.Trim(basePath, "/")
+	if prefix == "/" {
+		// a bare "/" base path would otherwise register "//peers"
+		prefix = ""
+	}
 	return &handler{
-		basePath: "/" + strings.Trim(basePath, "/"),
+		basePath: prefix,
 		provider: provider,
+		logger:   logger,
 	}
 }
 
+// register installs the endpoints on the mux. The method-qualified patterns
+// make the mux answer 405 for other methods; "GET" patterns also match HEAD,
+// which load balancers commonly use for health probes.
 func (h *handler) register(mux *http.ServeMux) {
-	mux.HandleFunc(h.basePath+"/peers", h.handlePeers)
-	mux.HandleFunc(h.basePath+"/keyspaces", h.handleKeySpaces)
-	mux.HandleFunc(h.basePath+"/healthz", h.handleHealthz)
-	mux.HandleFunc(h.basePath+"/readyz", h.handleReadyz)
+	mux.HandleFunc("GET "+h.basePath+"/peers", h.handlePeers)
+	mux.HandleFunc("GET "+h.basePath+"/keyspaces", h.handleKeySpaces)
+	mux.HandleFunc("GET "+h.basePath+"/healthz", h.handleHealthz)
+	mux.HandleFunc("GET "+h.basePath+"/readyz", h.handleReadyz)
 }
 
-func (h *handler) handlePeers(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func (h *handler) handlePeers(w http.ResponseWriter, _ *http.Request) {
 	peers, err := h.provider.SnapshotPeers()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		if h.logger != nil {
+			h.logger.Errorf("admin peers snapshot failed: %v", err)
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, peers)
 }
 
-func (h *handler) handleKeySpaces(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func (h *handler) handleKeySpaces(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, h.provider.SnapshotKeySpaces())
 }
 
-func (h *handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func (h *handler) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
 
-func (h *handler) handleReadyz(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+func (h *handler) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	if !h.provider.Ready() {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
 		return
@@ -184,26 +198,4 @@ func writeJSON(w http.ResponseWriter, value any) {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(value)
-}
-
-func waitForAdminConnect(ctx context.Context, address string) error {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(5 * time.Second)
-	}
-
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", address, 200*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-
-	return context.DeadlineExceeded
 }

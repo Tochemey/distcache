@@ -31,6 +31,8 @@ import (
 	"github.com/hashicorp/go-sockaddr"
 )
 
+const zeroZeroZeroZero = "0.0.0.0"
+
 // GetHostPort returns the actual ip address and port from a given address
 func GetHostPort(address string) (string, int, error) {
 	// Get the address
@@ -39,7 +41,19 @@ func GetHostPort(address string) (string, int, error) {
 		return "", 0, err
 	}
 
+	// an address such as ":8080" resolves to a nil IP which must be treated as the wildcard address
+	if addr.IP == nil {
+		return zeroZeroZeroZero, addr.Port, nil
+	}
+
 	return addr.IP.String(), addr.Port, nil
+}
+
+// isWildcard returns true when the given host is an unspecified address
+// such as "0.0.0.0", "::" or an empty host
+func isWildcard(host string) bool {
+	ip := net.ParseIP(host)
+	return ip == nil || ip.IsUnspecified()
 }
 
 // GetBindIP tries to find an appropriate bindIP to bind and propagate.
@@ -61,7 +75,7 @@ func GetBindIP(ifname, address string) (string, error) {
 		}
 
 		// If there is no bind IP, pick an address
-		if bindIP == "0.0.0.0" {
+		if isWildcard(bindIP) {
 			addr, err := getBindIPFromNetworkInterface(addrs)
 			if err != nil {
 				return "", fmt.Errorf("ip scan on %s: %w", ifname, err)
@@ -82,7 +96,7 @@ func GetBindIP(ifname, address string) (string, error) {
 		return "", fmt.Errorf("interface '%s' has no '%s' address", ifname, bindIP)
 	}
 
-	if bindIP == "0.0.0.0" {
+	if isWildcard(bindIP) {
 		// if we're not bound to a specific IP, let's use a suitable private IP address.
 		ipStr, err := sockaddr.GetPrivateIP()
 		if err != nil {

@@ -26,6 +26,7 @@ import (
 	"bytes"
 	"crypto/md5" // nolint
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -41,6 +42,17 @@ import (
 	"github.com/tochemey/distcache/log"
 )
 
+const (
+	// maxPacketSize is the maximum number of bytes accepted for a single incoming
+	// packet (payload plus trailing md5 digest). It mirrors memberlist's udpPacketBufSize
+	// (65536) so that anything a compliant peer sends fits, while unbounded reads are rejected.
+	maxPacketSize = 65536 + md5.Size
+
+	// defaultPacketReadTimeout is applied when neither PacketReadTimeout nor
+	// PacketWriteTimeout is configured.
+	defaultPacketReadTimeout = 10 * time.Second
+)
+
 // Transport is a memberlist.Transport implementation that uses TCP for both packet and stream
 // operations ("packet" and "stream" are terms used by memberlist).
 // It uses a new TCP connections for each operation. There is no connection reuse.
@@ -53,7 +65,14 @@ type Transport struct {
 	tcpListeners []net.Listener
 	tlsConfig    *tls.Config
 
-	shutdown atomic.Int32
+	shutdown     atomic.Int32
+	shutdownCh   chan struct{}
+	shutdownOnce sync.Once
+
+	// inflight tracks accepted connections still owned by a handler so that
+	// Shutdown can close them instead of waiting for their read deadline.
+	inflightMu sync.Mutex
+	inflight   map[net.Conn]struct{}
 
 	advertiseMu   sync.RWMutex
 	advertiseAddr string
@@ -68,13 +87,24 @@ func NewTransport(config TransportConfig) (*Transport, error) {
 		config.BindAddrs = []string{zeroZeroZeroZero}
 	}
 
+	if config.TLSEnabled && config.TLS == nil {
+		return nil, errors.New("TLS is enabled but no TLS configuration is provided")
+	}
+
+	logger := config.Logger
+	if logger == nil {
+		logger = log.New(log.InfoLevel, os.Stdout)
+	}
+
 	// Build out the new transport.
 	var ok bool
 	t := Transport{
-		config:   config,
-		logger:   log.New(log.InfoLevel, os.Stdout),
-		packetCh: make(chan *memberlist.Packet),
-		connCh:   make(chan net.Conn),
+		config:     config,
+		logger:     logger,
+		packetCh:   make(chan *memberlist.Packet),
+		connCh:     make(chan net.Conn),
+		shutdownCh: make(chan struct{}),
+		inflight:   make(map[net.Conn]struct{}),
 	}
 
 	var err error
@@ -159,8 +189,9 @@ func (t *Transport) FinalAdvertiseAddr(ip string, port int) (net.IP, int, error)
 		}
 		advertisePort = port
 	default:
-		switch t.config.BindAddrs[0] {
-		case zeroZeroZeroZero:
+		switch bindIP := net.ParseIP(t.config.BindAddrs[0]); {
+		case bindIP == nil || bindIP.IsUnspecified():
+			// wildcard bind address ("0.0.0.0" or "::"): pick a private IP
 			var err error
 			ip, err = sockaddr.GetPrivateIP()
 			if err != nil {
@@ -325,18 +356,46 @@ func (t *Transport) StreamCh() <-chan net.Conn {
 
 // Shutdown is called when memberlist is shutting down; this gives the
 // transport a chance to clean up any listeners.
+// It is safe to call Shutdown more than once.
 func (t *Transport) Shutdown() error {
 	// This will avoid log spam about errors when we shut down.
 	t.shutdown.Store(1)
 
-	// Rip through all the connections and shut them down.
+	// Rip through all the listeners and shut them down so that the accept loops exit.
 	for _, conn := range t.tcpListeners {
 		_ = conn.Close()
 	}
 
-	// Block until all the listener threads have died.
+	// Release every in-flight connection handler blocked on delivering to memberlist.
+	t.shutdownOnce.Do(func() {
+		close(t.shutdownCh)
+	})
+
+	// Close the connections still being read so that stalled handlers return
+	// now rather than at their read deadline.
+	t.inflightMu.Lock()
+	for conn := range t.inflight {
+		_ = conn.Close()
+	}
+	t.inflightMu.Unlock()
+
+	// Block until all the listener and connection handler goroutines have died.
 	t.wg.Wait()
 	return nil
+}
+
+// trackConn registers a connection owned by a handler.
+func (t *Transport) trackConn(conn net.Conn) {
+	t.inflightMu.Lock()
+	t.inflight[conn] = struct{}{}
+	t.inflightMu.Unlock()
+}
+
+// untrackConn forgets a connection once the handler no longer owns it.
+func (t *Transport) untrackConn(conn net.Conn) {
+	t.inflightMu.Lock()
+	delete(t.inflight, conn)
+	t.inflightMu.Unlock()
 }
 
 // tcpListen is a long-running goroutine that accepts incoming TCP connections
@@ -380,13 +439,19 @@ func (t *Transport) tcpListen(tcpLn net.Listener) {
 		// No error, reset loop delay
 		loopDelay = 0
 
-		go t.handleConnection(conn)
+		// the listener goroutine still holds a count on the wait group,
+		// so adding here can never race with Shutdown's Wait.
+		t.wg.Add(1)
+		go func() {
+			defer t.wg.Done()
+			t.handleConnection(conn)
+		}()
 	}
 }
 
 func (t *Transport) debugLogger() log.Logger {
 	if t.config.DebugEnabled {
-		return log.DefaultLogger
+		return t.logger
 	}
 	return log.DiscardLogger
 }
@@ -394,12 +459,20 @@ func (t *Transport) debugLogger() log.Logger {
 func (t *Transport) handleConnection(conn net.Conn) {
 	t.debugLogger().Debugf("New connection: %s", conn.RemoteAddr())
 
+	t.trackConn(conn)
 	closeConn := true
 	defer func() {
+		t.untrackConn(conn)
 		if closeConn {
 			_ = conn.Close()
 		}
 	}()
+
+	// never wait forever on a stalled peer
+	if err := conn.SetReadDeadline(time.Now().Add(t.config.readTimeout())); err != nil {
+		t.logger.Errorf("failed to set read deadline remote=(%s): %v", conn.RemoteAddr(), err)
+		return
+	}
 
 	// let's read first byte, and determine what to do about this connection
 	msgType := []byte{0}
@@ -411,14 +484,24 @@ func (t *Transport) handleConnection(conn net.Conn) {
 
 	switch {
 	case messageType(msgType[0]) == stream:
-		closeConn = false
-		t.connCh <- conn
+		// memberlist manages the deadlines of stream connections itself
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			t.logger.Errorf("failed to reset read deadline remote=(%s): %v", conn.RemoteAddr(), err)
+			return
+		}
+
+		select {
+		case t.connCh <- conn:
+			closeConn = false
+		case <-t.shutdownCh:
+			// transport is shutting down: nobody will ever read this connection
+		}
 	case messageType(msgType[0]) == packet:
 		addrLengthBuf := []byte{0}
 		_, err := io.ReadFull(conn, addrLengthBuf)
 
 		if err != nil {
-			t.logger.Errorf("error while reading node address length from packet remote=(%s) message type: %v", conn.RemoteAddr(), err)
+			t.logger.Errorf("failed to read node address length from packet remote=(%s): %v", conn.RemoteAddr(), err)
 			return
 		}
 
@@ -426,18 +509,24 @@ func (t *Transport) handleConnection(conn net.Conn) {
 		_, err = io.ReadFull(conn, addrBuf)
 
 		if err != nil {
-			t.logger.Errorf("error while reading node address length from packet remote=(%s) message type: %v", conn.RemoteAddr(), err)
+			t.logger.Errorf("failed to read node address from packet remote=(%s): %v", conn.RemoteAddr(), err)
 			return
 		}
 
-		buf, err := io.ReadAll(conn)
+		// read at most one byte beyond the limit so that an oversized packet can be detected
+		buf, err := io.ReadAll(io.LimitReader(conn, maxPacketSize+1))
 		if err != nil {
-			t.logger.Errorf("error while reading node address length from packet remote=(%s) message type: %v", conn.RemoteAddr(), err)
+			t.logger.Errorf("failed to read packet data from remote=(%s): %v", conn.RemoteAddr(), err)
+			return
+		}
+
+		if len(buf) > maxPacketSize {
+			t.logger.Errorf("packet too large: rejecting packet exceeding max_size=(%d) from remote=(%s)", maxPacketSize, conn.RemoteAddr())
 			return
 		}
 
 		if len(buf) < md5.Size {
-			t.logger.Warnf("not enough data received data_length=(%d) from packet remote=(%s) message type: %v", len(buf), conn.RemoteAddr(), err)
+			t.logger.Warnf("not enough data received data_length=(%d) from packet remote=(%s)", len(buf), conn.RemoteAddr())
 			return
 		}
 
@@ -446,17 +535,24 @@ func (t *Transport) handleConnection(conn net.Conn) {
 		expectedDigest := md5.Sum(buf) // nolint
 
 		if !bytes.Equal(receivedDigest, expectedDigest[:]) {
-			t.logger.Warnf("packet digest mismatch. expected=(%s), received=(%s), data_length=(%d), remote=(%s)", fmt.Sprintf("%x", expectedDigest), fmt.Sprintf("%x", receivedDigest), len(buf), conn.RemoteAddr())
+			t.logger.Warnf("dropping packet with digest mismatch. expected=(%s), received=(%s), data_length=(%d), remote=(%s)", fmt.Sprintf("%x", expectedDigest), fmt.Sprintf("%x", receivedDigest), len(buf), conn.RemoteAddr())
+			return
 		}
 
 		t.debugLogger().Infof("Received packet addr=(%s), size=(%d), hash=(%s)", addr(addrBuf), len(buf), fmt.Sprintf("%x", receivedDigest))
-		t.packetCh <- &memberlist.Packet{
+		pkt := &memberlist.Packet{
 			Buf:       buf,
 			From:      addr(addrBuf),
 			Timestamp: time.Now(),
 		}
+
+		select {
+		case t.packetCh <- pkt:
+		case <-t.shutdownCh:
+			// transport is shutting down: drop the packet
+		}
 	default:
-		t.logger.Errorf("unknown message type=(%s) remote=(%s)", string(msgType), conn.RemoteAddr())
+		t.logger.Errorf("unknown message type=(%d) remote=(%s)", msgType[0], conn.RemoteAddr())
 	}
 }
 

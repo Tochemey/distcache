@@ -26,13 +26,14 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/groupcache/groupcache-go/v3"
 
 	"github.com/tochemey/distcache/log"
 )
 
-// logLevel enumerates recognized severity levels parsed from Olric log lines.
+// logLevel enumerates recognized severity levels parsed from memberlist log lines.
 // It is an internal representation used to dispatch to the appropriate Logger method.
 type logLevel uint8
 
@@ -59,7 +60,7 @@ type parsedMessage struct {
 	text  string
 }
 
-// logWriter adapts Olric's raw log output (written via io.Writer) to the goakt Logger.
+// logWriter adapts memberlist's raw log output (written via io.Writer) to the distcache Logger.
 // It parses severity prefixes ([INFO],[DEBUG],[WARN],[ERROR]) in each line and forwards
 // the stripped message to the matching Logger method. Unknown lines are ignored.
 // It is safe for concurrent use because the underlying Logger is expected to be thread‑safe.
@@ -74,14 +75,14 @@ var _ io.Writer = (*logWriter)(nil)
 //
 // Usage:
 //
-//	lw := newLogWriter(logger) // pass lw to Olric configuration expecting an io.Writer
+//	lw := newLogWriter(logger) // pass lw to memberlist configuration expecting an io.Writer
 //
 // The returned writer performs lightweight prefix parsing on each Write without regex.
 func newLogWriter(logger log.Logger) *logWriter {
 	return &logWriter{logger: logger}
 }
 
-// Write parses a single Olric log line and dispatches it to the Logger.
+// Write parses a single memberlist log line and dispatches it to the Logger.
 // Behavior:
 //   - Trims surrounding whitespace.
 //   - Detects the earliest occurrence of any known severity prefix.
@@ -92,7 +93,7 @@ func newLogWriter(logger log.Logger) *logWriter {
 // Concurrency:
 //   - Safe if the provided Logger is concurrency-safe.
 //
-// It never returns an error to avoid breaking Olric's logging flow.
+// It never returns an error to avoid breaking memberlist's logging flow.
 func (l *logWriter) Write(message []byte) (n int, err error) {
 	switch msg, ok := parseLogLine(bytes.TrimSpace(message)); {
 	case !ok:
@@ -167,6 +168,10 @@ func findFirstPrefix(line []byte) (level logLevel, idx int, plen int, ok bool) {
 	return level, firstIdx, plen, ok
 }
 
+// cacheLog adapts the distcache Logger to groupcache's structured logger.
+// groupcache passes a pre-formatted message followed by slog-style key/value
+// pairs ("peer", addr, "key", key, "err", err), so the pairs are rendered as
+// k=v rather than fed to Sprintf.
 type cacheLog struct {
 	logger log.Logger
 }
@@ -178,11 +183,32 @@ func newCacheLog(logger log.Logger) *cacheLog {
 }
 
 func (l cacheLog) Info(msg string, args ...any) {
-	l.logger.Info(fmt.Sprintf(msg, args...))
+	l.logger.Info(formatStructured(msg, args))
 }
 
 func (l cacheLog) Error(msg string, args ...any) {
-	l.logger.Error(fmt.Sprintf(msg, args...))
+	l.logger.Error(formatStructured(msg, args))
+}
+
+// formatStructured renders msg followed by args as space-separated key=value
+// pairs. A trailing key without a value is rendered as key=<missing>.
+func formatStructured(msg string, args []any) string {
+	if len(args) == 0 {
+		return msg
+	}
+	var b strings.Builder
+	b.WriteString(msg)
+	for i := 0; i < len(args); i += 2 {
+		b.WriteByte(' ')
+		fmt.Fprint(&b, args[i])
+		b.WriteByte('=')
+		if i+1 < len(args) {
+			fmt.Fprint(&b, args[i+1])
+		} else {
+			b.WriteString("<missing>")
+		}
+	}
+	return b.String()
 }
 
 var _ groupcache.Logger = (*cacheLog)(nil)

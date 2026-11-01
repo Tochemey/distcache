@@ -30,6 +30,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const instrumentationName = "github.com/tochemey/distcache/engine"
@@ -101,7 +102,9 @@ func (i *instrumentation) start(ctx context.Context, op string, keyspace string)
 
 func (i *instrumentation) startSpan(ctx context.Context, op string, keyspace string) (context.Context, trace.Span) {
 	if i.tracer == nil {
-		return ctx, trace.SpanFromContext(ctx)
+		// Never reuse the caller's span here: End() and SetStatus() would be
+		// applied to a span the engine does not own.
+		return ctx, noop.Span{}
 	}
 
 	attrs := []attribute.KeyValue{

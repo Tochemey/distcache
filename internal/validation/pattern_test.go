@@ -49,3 +49,18 @@ func TestPatternValidator(t *testing.T) {
 	require.Error(t, err)
 	assert.EqualError(t, err, customError.Error())
 }
+
+func TestPatternValidatorInvalidPattern(t *testing.T) {
+	// an invalid regular expression must be reported instead of being silently swallowed
+	validator := NewPatternValidator("[unclosed", "anything", nil)
+	err := validator.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid pattern")
+
+	// the compile error wins over the custom error
+	customError := errors.New("custom error")
+	validator = NewPatternValidator("[unclosed", "anything", customError)
+	err = validator.Validate()
+	require.Error(t, err)
+	assert.NotEqual(t, customError, err)
+}

@@ -210,21 +210,28 @@ func TestDiscovery(t *testing.T) {
 	t.Run("With Initialize: already initialized", func(t *testing.T) {
 		// create the instance of provider
 		provider := NewDiscovery(nil)
-		provider.initialized = atomic.NewBool(true)
+		provider.initialized.Store(true)
 		assert.Error(t, provider.Initialize())
 	})
 	t.Run("With Deregister", func(t *testing.T) {
 		// create the instance of provider
 		provider := NewDiscovery(nil)
 		// for the sake of the test
-		provider.initialized = atomic.NewBool(true)
+		provider.initialized.Store(true)
+		assert.NoError(t, provider.Deregister())
+		// a second Deregister must not panic
+		err := provider.Deregister()
+		assert.Error(t, err)
+		assert.EqualError(t, err, discovery.ErrNotInitialized.Error())
+		// and the provider can be re-armed
+		provider.initialized.Store(true)
 		assert.NoError(t, provider.Deregister())
 	})
 	t.Run("With Deregister when not initialized", func(t *testing.T) {
 		// create the instance of provider
 		provider := NewDiscovery(nil)
 		// for the sake of the test
-		provider.initialized = atomic.NewBool(false)
+		provider.initialized.Store(false)
 		err := provider.Deregister()
 		assert.Error(t, err)
 		assert.EqualError(t, err, discovery.ErrNotInitialized.Error())

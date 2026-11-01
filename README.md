@@ -26,10 +26,10 @@ The caching engine is powered by the battle-tested [groupcache-go](https://githu
 - **Automatic node discovery**: nodes automatically react to cluster topology changes.
 - **KeySpace overrides**: per-keyspace TTL, timeouts, max bytes, warm keys, and protections.
 - **Dynamic keyspace updates**: replace keyspaces at runtime via `UpdateKeySpace`.
-- **Warmup and hot key tracking**: prefetch hot keys on join/leave events, with optional periodic refresh-ahead via `warmup.Config.RefreshInterval`.
+- **Warmup and hot key tracking**: prefetch hot keys on join/leave events, with optional periodic refresh-ahead via `warmup.Config.RefreshInterval`. Refresh-ahead runs on the node that owns each key, so a key is fetched from the source once per interval cluster-wide.
 - **DataSource protection**: rate limiting and circuit breaking, globally or per keyspace.
 - **Cluster events**: subscribe to peer-joined / left / updated notifications via `Engine.Events()`.
-- **Admin diagnostics**: JSON endpoints for peers and keyspace stats, plus `/healthz` and `/readyz` probes.
+- **Admin diagnostics**: JSON endpoints for peers and keyspace stats, plus `/healthz` and `/readyz` probes. The admin server has no built-in authentication: bind it to loopback or an isolated network, or wrap it with `admin.Config.Middleware`.
 - **Observability**: OpenTelemetry tracing and metrics for engine operations, cache misses, and DataSource fetch latency.
 - **TLS and gossip auth**: end-to-end encrypted communication between nodes; optional symmetric `WithGossipSecret` to authenticate cluster membership.
 - **Discovery providers**: built-in support for:
@@ -60,7 +60,7 @@ Then create a config and start the engine:
 
 3. **Create a config**: use `NewStandaloneConfig` for single-node setups or `NewConfig` with a [discovery provider](#discovery-providers) for distributed clusters.
 
-4. **Start the engine**: call `distcache.NewEngine(cfg)` followed by `engine.Start(ctx)`.
+4. **Start the engine**: call `distcache.NewEngine(cfg)` followed by `engine.Start(ctx)`. `NewEngine` validates the configuration and returns an error for invalid settings.
 
 5. **Read and write**: use `engine.Get` / `engine.Put` (and their batch variants) to interact with the cache.
 
