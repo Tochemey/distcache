@@ -66,8 +66,8 @@ github.com/google/go-tpm v0.9.8/go.mod h1:h9jEsEECg7gtLis0upRBQU+GhYVH6jMjrFxI8u
 github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
-github.com/groupcache/groupcache-go/v3 v3.5.0 h1:dA5Wj2lEvvI7rcAueCZ39ibDmIDtj28mc3irDNSTGnQ=
-github.com/groupcache/groupcache-go/v3 v3.5.0/go.mod h1:6wT9pxRpFHzXFyDtlv9eGcxAtmpXs/FTl7Y5mMxXRt8=
+github.com/groupcache/groupcache-go/v3 v3.5.1 h1:6rumGfmAJGg18jGAHXtFZ7OseV29MjkRhYveikIXnCM=
+github.com/groupcache/groupcache-go/v3 v3.5.1/go.mod h1:+5/M1dtvWtNsgFDoSf1KNjG0BeldNvw/waJmyAoHpo4=
 github.com/hashicorp/errwrap v1.0.0/go.mod h1:YH+1FKiLXxHSkmPseP+kNlulaMuP3n2brvKWEqk/Jc4=
 github.com/hashicorp/errwrap v1.1.0 h1:OxrOeh75EUXMY8TBjag2fzXGZ40LB6IKw45YeGUDY2I=
 github.com/hashicorp/errwrap v1.1.0/go.mod h1:YH+1FKiLXxHSkmPseP+kNlulaMuP3n2brvKWEqk/Jc4=

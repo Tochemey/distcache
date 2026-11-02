@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/deckarep/golang-set/v3 v3.0.0
 	github.com/flowchartsman/retry v1.2.0
-	github.com/groupcache/groupcache-go/v3 v3.5.0
+	github.com/groupcache/groupcache-go/v3 v3.5.1
 	github.com/hashicorp/go-sockaddr v1.0.7
 	github.com/hashicorp/memberlist v0.7.0
 	github.com/kapetan-io/tackle v0.15.0
